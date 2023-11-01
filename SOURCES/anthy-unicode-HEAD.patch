@@ -1,0 +1,4616 @@
+From c9f365df28640b1e5dd518f532e77e33fcb4451c Mon Sep 17 00:00:00 2001
+From: fujiwarat <takao.fujiwara1@gmail.com>
+Date: Tue, 13 Jul 2021 08:34:34 +0900
+Subject: [PATCH] Code reviews
+
+---
+ anthy/corpus.h            |   1 +
+ anthy/logger.h            |   1 +
+ anthy/matrix.h            |   1 +
+ calctrans/calctrans.c     |  57 +++++++++++---
+ calctrans/corpus.c        |  44 +++++++++--
+ calctrans/input_set.c     |  74 +++++++++++++++---
+ calctrans/input_set.h     |   1 +
+ configure.ac              |   2 +
+ depgraph/mkdepgraph.c     |  68 ++++++++++++++--
+ mkanthydic/mkfiledic.c    |  16 +++-
+ mkworddic/calcfreq.c      |  26 +++++--
+ mkworddic/mkdic.c         | 160 +++++++++++++++++++++++++++-----------
+ mkworddic/mkdic.h         |   1 +
+ mkworddic/mkudic.c        |  31 +++++++-
+ mkworddic/writewords.c    |   3 +-
+ src-diclib/conf.c         |  22 ++++--
+ src-diclib/diclib_inner.h |   2 +-
+ src-diclib/file_dic.c     |   2 +-
+ src-diclib/filemap.c      |   8 +-
+ src-diclib/logger.c       |  23 ++++++
+ src-diclib/ruleparser.c   |  11 ++-
+ src-diclib/xstr.c         |  84 +++++++++++++++++---
+ src-main/context.c        | 102 ++++++++++++++++--------
+ src-main/main.c           |  10 +--
+ src-ordering/candswap.c   |  23 +++++-
+ src-ordering/relation.c   |   6 +-
+ src-splitter/compose.c    |  84 +++++++++++++++-----
+ src-splitter/depgraph.c   |  15 +++-
+ src-splitter/lattice.c    |  54 ++++++++++---
+ src-splitter/metaword.c   |  22 ++++--
+ src-splitter/segclass.c   |   4 +-
+ src-splitter/splitter.c   |   6 ++
+ src-util/agent.c          |  52 ++++++++++---
+ src-util/convdb.c         |   8 +-
+ src-util/dic-tool.c       |  86 +++++++++++++++++---
+ src-util/egg.c            |   9 +++
+ src-util/input.c          |  87 +++++++++++++++++----
+ src-util/rkconv.c         |  46 ++++++++---
+ src-worddic/dic_util.c    |  28 +++++--
+ src-worddic/ext_ent.c     |  38 +++++++--
+ src-worddic/feature_set.c |   7 ++
+ src-worddic/matrix.c      |  75 +++++++++++++++---
+ src-worddic/priv_dic.c    |  56 ++++++++-----
+ src-worddic/record.c      |  30 +++++--
+ src-worddic/textdict.c    |  31 +++++---
+ src-worddic/texttrie.c    |  63 ++++++++++-----
+ src-worddic/word_dic.c    |  20 ++++-
+ src-worddic/word_lookup.c |   7 +-
+ test/check.c              |  30 +++++--
+ test/main.c               |  15 +++-
+ test/test-matrix.c        |   7 ++
+ 51 files changed, 1314 insertions(+), 345 deletions(-)
+
+diff --git a/anthy/corpus.h b/anthy/corpus.h
+index 0a4a8e0..eedc41f 100644
+--- a/anthy/corpus.h
++++ b/anthy/corpus.h
+@@ -21,5 +21,6 @@ void corpus_build(struct corpus *c);
+ void corpus_dump(struct corpus *c);
+ void corpus_write_bucket(FILE *fp, struct corpus *c);
+ void corpus_write_array(FILE *fp, struct corpus *c);
++void corpus_free(struct corpus *c);
+ 
+ #endif
+diff --git a/anthy/logger.h b/anthy/logger.h
+index a80fb5f..7d0f08a 100644
+--- a/anthy/logger.h
++++ b/anthy/logger.h
+@@ -4,5 +4,6 @@
+ 
+ void anthy_do_set_logger(void (*)(int , const char*), int lv);
+ void anthy_log(int lv, const char *, ...);
++const char * anthy_strerror(int errnum);
+ 
+ #endif
+diff --git a/anthy/matrix.h b/anthy/matrix.h
+index f424048..8245dca 100644
+--- a/anthy/matrix.h
++++ b/anthy/matrix.h
+@@ -22,5 +22,6 @@ void anthy_sparse_matrix_make_matrix(struct sparse_matrix *m);
+ struct matrix_image *anthy_matrix_image_new(struct sparse_matrix *s);
+ /* 行列イメージにアクセスするAPI(配列はnetwork byte order) */
+ int anthy_matrix_image_peek(int *im, int row, int col);
++void anthy_sparse_matrix_free(struct sparse_matrix *m);
+ 
+ #endif
+diff --git a/calctrans/calctrans.c b/calctrans/calctrans.c
+index 2855b7c..a5782c6 100644
+--- a/calctrans/calctrans.c
++++ b/calctrans/calctrans.c
+@@ -14,6 +14,7 @@
+  *
+  * Copyright (C) 2006 HANAOKA Toshiyuki
+  * Copyright (C) 2006-2007 TABATA Yusuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  */
+ /*
+@@ -31,17 +32,19 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <assert.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
+ #include <math.h>
+ 
+ #include <anthy/anthy.h>
+-#include <anthy/xstr.h>
+-#include <anthy/feature_set.h>
++#include <anthy/corpus.h>
+ #include <anthy/diclib.h>
++#include <anthy/feature_set.h>
++#include <anthy/logger.h>
++#include <anthy/xstr.h>
+ #include "input_set.h"
+-#include <anthy/corpus.h>
+ 
+ #define FEATURE_SET_SIZE NR_EM_FEATURES
+ 
+@@ -155,7 +158,7 @@ static void
+ parse_indep(struct input_info *m, struct sentence_info *sinfo,
+ 	    char *line, char *buf, int error_class)
+ {
+-  struct array features;
++  struct array features = { 0, };
+   char *s;
+   int weight = 1;
+   /**/
+@@ -341,6 +344,7 @@ dump_features(FILE *ofp, struct input_set *is)
+   for (i = 0; i < nr; i++) {
+     dump_line(ofp, lines[i]);
+   }
++  free(lines);
+ }
+ 
+ static void
+@@ -372,7 +376,8 @@ convert_line(FILE *ofp, char *buf)
+ }
+ 
+ static void
+-convert_file(FILE *ifp)
++convert_file(FILE       *ifp,
++             const char *ifn)
+ {
+   char buf[1024];
+   FILE *ofp = NULL;
+@@ -400,6 +405,10 @@ convert_file(FILE *ifp)
+ 	write_nl(ofp, 0);
+       }
+     } else {
++      if (!ofp) {
++        anthy_log(0, "section could not found in %s\n", ifn);
++        continue;
++      }
+       convert_line(ofp, buf);
+     }
+   }
+@@ -420,7 +429,7 @@ convert_data(int nr_fn, char **fns)
+       fprintf(stderr, "failed to open (%s)\n", fns[i]);
+       continue;
+     }
+-    convert_file(ifp);
++    convert_file(ifp, fns[i]);
+     fclose(ifp);
+   }
+ }
+@@ -468,7 +477,10 @@ static void
+ string_pool_sort(struct string_pool *sp)
+ {
+   int idx, h;
+-  sp->array = malloc(sizeof(struct string_node *) * sp->nr);
++  if (!(sp->array = malloc(sizeof(struct string_node *) * sp->nr))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
+   for (idx = 0, h = 0; h < STRING_HASH_SIZE; h++) {
+     struct string_node *node;
+     for (node = sp->hash[h].next_hash; node; node = node->next_hash) {
+@@ -494,6 +506,7 @@ static unsigned int
+ string_hash(const unsigned char *str)
+ {
+   unsigned int h = 0;
++  assert(str);
+   while (*str) {
+     h += *str;
+     h *= 13;
+@@ -526,10 +539,20 @@ static void
+ flush_extract_stat(struct extract_stat *es, struct string_pool *sp)
+ {
+   int i;
++  assert(es);
++  if (es->nr > 0)
++    assert(es->info);
+   for (i = 0; i < es->nr; i++) {
+     if (es->info[i].valid) {
+       struct string_node *node;
+       node = find_string_node(sp, es->info[i].indep);
++      if (!node) {
++        anthy_log(0, "Failed malloc at %d/%d in %s:%d\n",
++                  i, es->nr, __FILE__, __LINE__);
++        free(es->info[i].indep);
++        es->info[i].indep = NULL;
++        continue;
++      }
+       if (node->key == 0) {
+ 	xstr *xs = anthy_cstr_to_xstr(node->str, ANTHY_EUC_JP_ENCODING);
+ 	node->key = anthy_xstr_hash(xs);
+@@ -585,6 +608,8 @@ static void
+ fill_missed_word(struct extract_stat *es, char *buf)
+ {
+   char *c = get_indep_part(buf);
++  assert(es);
++  assert(es->info);
+   if (!c) {
+     return ;
+   }
+@@ -669,6 +694,10 @@ proc_corpus(int nr_fn, char **fns, FILE *ofp)
+   fprintf(stderr, " %d sentences\n", m->nr_sentences);
+   fprintf(stderr, " %d connections\n", m->nr_connections);
+   fprintf(stderr, " %d segments\n", m->nr_connections - m->nr_sentences);
++  input_set_free(m->seg_is);
++  input_set_free(m->cand_is);
++  corpus_free(m->indep_corpus);
++  free(m);
+ }
+ 
+ int
+@@ -682,7 +711,10 @@ main(int argc, char **argv)
+   int extract = 0;
+ 
+   ofp = NULL;
+-  input_files = malloc(sizeof(char *) * argc);
++  if (!(input_files = malloc(sizeof(char *) * argc))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return 1;
++  }
+   
+   for (i = 1; i < argc; i++) {
+     char *arg = argv[i];
+@@ -700,15 +732,17 @@ main(int argc, char **argv)
+       extract = 1;
+     } else {
+       input_files[nr_input] = arg;
+-      nr_input ++;
++      nr_input++;
+     }
+   }
+   if (extract) {
+     printf(" -- extracting missed words\n");
+-    if (!ofp) {
++    if (!ofp)
+       ofp = stdout;
+-    }
+     extract_word(nr_input, input_files, ofp);
++    free(input_files);
++    if (ofp != stdout)
++      fclose(ofp);
+     return 0;
+   }
+   if (ofp) {
+@@ -720,6 +754,7 @@ main(int argc, char **argv)
+     printf(" -- converting dictionary from text to binary form\n");
+     convert_data(nr_input, input_files);
+   }
++  free(input_files);
+ 
+   return 0;
+ }
+diff --git a/calctrans/corpus.c b/calctrans/corpus.c
+index 42f07ef..0b441e3 100644
+--- a/calctrans/corpus.c
++++ b/calctrans/corpus.c
+@@ -3,7 +3,7 @@
+  * 現時点では例文をすべて入れているが、そのうちフィルターすることも考えられる
+  *
+  * Copyright (C) 2007 TABATA Yusuke
+- *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -20,11 +20,13 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <assert.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
+ 
+ #include <anthy/corpus.h>
++#include <anthy/logger.h>
+ 
+ #define MAX_NR_VAL 8
+ #define BUCKET_SIZE 8192
+@@ -95,6 +97,10 @@ struct corpus *
+ corpus_new(void)
+ {
+   struct corpus *c = malloc(sizeof(*c));
++  if (!c) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   c->nr_node = 0;
+   c->array_size = 0;
+   c->array = NULL;
+@@ -154,7 +160,11 @@ corpus_build_flatten(struct corpus *c)
+   int i, j;
+   int idx = 0;
+   int nr_valid_elms = count_nr_valid_values(c);
+-  c->elms = malloc(sizeof(struct element) * nr_valid_elms);
++  assert(c);
++  if (!(c->elms = calloc(nr_valid_elms, sizeof(struct element)))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
+   for (i = 0; i < c->nr_node; i++) {
+     struct node *nd = &c->array[i];
+     if (nd->flags & ELM_INVALID) {
+@@ -164,9 +174,8 @@ corpus_build_flatten(struct corpus *c)
+       c->elms[idx].val = nd->val[j];
+       c->elms[idx].next_idx = -1;
+       c->elms[idx].flags = nd->flags;
+-      if (j == 0) {
+-	c->elms[idx].flags |= ELM_WORD_BORDER;
+-      }
++      if (j == 0)
++        c->elms[idx].flags |= ELM_WORD_BORDER;
+       c->elms[idx].idx = idx;
+       idx++;
+     }
+@@ -177,7 +186,10 @@ static struct bucket *
+ find_bucket(struct corpus *c, int val)
+ {
+   int i;
+-  int h = val % c->nr_buckets;
++  int h;
++  assert(c);
++  assert(c->buckets);
++  h = val % c->nr_buckets;
+   for (i = 0; i < MAX_COLLISION; i++) {
+     struct bucket *bkt = &c->buckets[h];
+     if (bkt->key == val) {
+@@ -188,10 +200,10 @@ find_bucket(struct corpus *c, int val)
+       return bkt;
+     }
+     /**/
+-    h ++;
++    h++;
+     h %= c->nr_buckets;
+   }
+-  c->bucket_collision ++;
++  c->bucket_collision++;
+   return NULL;
+ }
+ 
+@@ -199,6 +211,11 @@ static void
+ corpus_build_link(struct corpus *c)
+ {
+   int i;
++  assert(c);
++  if (!(c->elms)) {
++    anthy_log(0, "c->elms should not be null.\n");
++    return;
++  }
+   for (i = 0; i < c->nr_values; i++) {
+     struct element *elm = &c->elms[i];
+     struct bucket *bkt = find_bucket(c, elm->val);
+@@ -275,3 +292,14 @@ corpus_write_array(FILE *fp, struct corpus *c)
+ 	    c->elms[i].next_idx);
+   }
+ }
++
++void
++corpus_free (struct corpus *c)
++{
++  if (!c)
++    return;
++  free (c->array);
++  free (c->elms);
++  free (c->buckets);
++  free (c);
++}
+diff --git a/calctrans/input_set.c b/calctrans/input_set.c
+index 0a880b2..ccf108d 100644
+--- a/calctrans/input_set.c
++++ b/calctrans/input_set.c
+@@ -2,14 +2,18 @@
+  *
+  * Copyright (C) 2006 HANAOKA Toshiyuki
+  * Copyright (C) 2006-2007 TABATA Yusuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  * Special Thanks: Google Summer of Code Program 2006
+  *
+  */
++#include <assert.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <math.h>
++
++#include <anthy/logger.h>
+ #include "input_set.h"
+ 
+ #define HASH_SIZE 1024
+@@ -75,11 +79,18 @@ add_line(struct input_set *is, int *features, int nr)
+ {
+   int i, h;
+   struct input_line *il;
+-  il = malloc(sizeof(struct input_line));
++  if (!(il = malloc(sizeof(struct input_line)))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   il->nr_features = nr;
+-  il->features = malloc(sizeof(int) * nr);
+-  for (i = 0; i < nr; i++) {
+-    il->features[i] = features[i];
++  if (!(il->features = malloc(sizeof(int) * nr))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    il->nr_features = nr = 0;
++  } else {
++    for (i = 0; i < nr; i++) {
++      il->features[i] = features[i];
++    }
+   }
+   il->weight = 0;
+   il->negative_weight = 0;
+@@ -114,9 +125,10 @@ input_set_set_features(struct input_set *is, int *features,
+ 
+   /**/
+   il = find_same_line(is, features, nr);
+-  if (!il) {
++  if (!il)
+     il = add_line(is, features, nr);
+-  }
++  if (!il)
++    return;
+   /**/
+   if (weight > 0) {
+     il->weight += weight;
+@@ -132,7 +144,10 @@ input_set_create(void)
+ {
+   int i;
+   struct input_set *is;
+-  is = malloc(sizeof(struct input_set));
++  if (!(is = malloc(sizeof(struct input_set)))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   is->lines = NULL;
+   /**/
+   for (i = 0; i < HASH_SIZE; i++) {
+@@ -185,13 +200,46 @@ input_set_output_feature_freq(FILE *fp, struct input_set *is)
+   }
+ }
+ 
++static void
++input_line_free (struct input_line **il)
++{
++  assert (il);
++  if (!(*il))
++    return;
++  free ((*il)->features);
++  input_line_free (&((*il)->next_line));
++  free (*il);
++  *il = NULL;
++}
++
++void
++input_set_free (struct input_set *is)
++{
++  int i;
++  if (!is)
++      return;
++  input_line_free (&is->lines);
++  for (i = 0; i < HASH_SIZE; i++)
++    free (is->feature_freq->hash_head[i].next);
++  free (is->feature_freq->hash_head);
++  free (is->feature_freq);
++  free (is);
++}
++
+ struct int_map *
+ int_map_new(void)
+ {
+   int i;
+   struct int_map *im = malloc(sizeof(struct int_map));
++  if (!im) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   im->nr = 0;
+-  im->hash_head = malloc(sizeof(struct int_map_node) * HASH_SIZE);
++  if (!(im->hash_head = malloc(sizeof(struct int_map_node) * HASH_SIZE))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return im;
++  }
+   for (i = 0; i < HASH_SIZE; i++) {
+     im->hash_head[i].next = NULL;
+   }
+@@ -234,17 +282,20 @@ int_map_set(struct int_map *im, int idx, int val)
+   int h;
+   if (node) {
+     node->val = val;
+-    return ;
++    return;
+   }
+   /**/
+-  node = malloc(sizeof(struct int_map_node));
++  if (!(node = malloc(sizeof(struct int_map_node)))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
+   node->key = idx;
+   node->val = val;
+   h = node_index(idx);
+   node->next = im->hash_head[h].next;
+   im->hash_head[h].next = node;
+   /**/
+-  im->nr ++;
++  im->nr++;
+ }
+ 
+ void
+@@ -253,6 +304,7 @@ int_map_flatten(struct int_map *im)
+   int i;
+   struct int_map_node *node;
+   int max_n = 0;
++  assert(im->hash_head);
+   /* 配列を準備する */
+   im->array_size = im->nr * 2;
+   im->array = malloc(sizeof(struct int_map_node *) * 
+diff --git a/calctrans/input_set.h b/calctrans/input_set.h
+index 45d5931..8d1f875 100644
+--- a/calctrans/input_set.h
++++ b/calctrans/input_set.h
+@@ -27,6 +27,7 @@ struct input_set *input_set_filter(struct input_set *is,
+ void input_set_output_feature_freq(FILE *fp, struct input_set *is);
+ /**/
+ struct input_line *input_set_get_input_line(struct input_set *is);
++void input_set_free(struct input_set *is);
+ 
+ 
+ struct int_map *int_map_new(void);
+diff --git a/configure.ac b/configure.ac
+index 7b011ec..270c3f2 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -22,6 +22,8 @@ AC_PROG_CPP
+ AM_PROG_LIBTOOL
+ AM_PATH_LISPDIR
+ 
++AC_CHECK_FUNCS([strerror_r])
++
+ AM_CONDITIONAL(ELISP, test x$lispdir != x)
+ 
+ dnl without emacs. install-lispLISP does mkdir /anthy
+diff --git a/depgraph/mkdepgraph.c b/depgraph/mkdepgraph.c
+index 5a63d5b..b627283 100644
+--- a/depgraph/mkdepgraph.c
++++ b/depgraph/mkdepgraph.c
+@@ -1,6 +1,7 @@
+ /*
+  * Copyright (C) 2000-2007 TABATA Yusuke
+  * Copyright (C) 2004-2006 YOSHIDA Yuichi
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+  * 付属語グラフをバイナリ化する
+@@ -23,6 +24,7 @@
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
+ 
++#include <assert.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
+@@ -54,7 +56,11 @@ static int nrRules;
+ static int 
+ get_node_id_by_name(const char *name)
+ {
++  struct dep_node *tmp = NULL;
++  char **tmp2 = NULL;
+   int i;
++  if (nrNodes > 0)
++    assert(gNodeNames);
+   /* 登録済みのものから探す */
+   for (i = 0; i < nrNodes; i++) {
+     if (!strcmp(name,gNodeNames[i])) {
+@@ -62,8 +68,24 @@ get_node_id_by_name(const char *name)
+     }
+   }
+   /* なかったので作る */
+-  gNodes = realloc(gNodes, sizeof(struct dep_node)*(nrNodes+1));
+-  gNodeNames = realloc(gNodeNames, sizeof(char*)*(nrNodes+1));
++  if (!(tmp = realloc(gNodes, sizeof(struct dep_node)*(nrNodes+1)))) {
++    anthy_log(0, "Could not realloc gNodes.\n");
++    free(gNodes);
++    gNodes = NULL;
++    nrNodes = 0;
++    return 0;
++  }
++  gNodes = tmp;
++  if (!(tmp2 = realloc(gNodeNames, sizeof(char*)*(nrNodes+1)))) {
++    anthy_log(0, "Could not realloc gNodeNames.\n");
++    free(gNodes);
++    gNodes = NULL;
++    free(gNodeNames);
++    gNodeNames = NULL;
++    nrNodes = 0;
++    return 0;
++  }
++  gNodeNames = tmp2;
+   gNodes[nrNodes].nr_branch = 0;
+   gNodes[nrNodes].branch = 0;
+   gNodeNames[nrNodes] = strdup(name);
+@@ -78,6 +100,7 @@ find_branch(struct dep_node *node, xstr **strs, int nr_strs)
+ {
+   struct dep_branch *db;
+   int i, j;
++  assert(node);
+   /* 同じ遷移条件のブランチを探す */
+   for (i = 0; i < node->nr_branch; i++) {
+     db = &node->branch[i];
+@@ -188,12 +211,15 @@ parse_dep(char **tokens, int nr)
+   struct dep_branch *db;
+   struct dep_node *dn;
+   int nr_strs;
+-  xstr **strs = alloca(sizeof(xstr*) * nr);
+ 
++  assert(gNodes);
++  xstr **strs = alloca(sizeof(xstr*) * nr);
+   /* ノードとそのidを確保 */
+   id = get_node_id_by_name(tokens[row]);
++  assert(id < nrNodes);
+   dn = &gNodes[id];
+-  row ++;
++  row++;
++  assert(dn);
+ 
+   nr_strs = 0;
+ 
+@@ -236,9 +262,14 @@ static void
+ check_nodes(void)
+ {
+   int i;
++  if (nrNodes > 0) {
++    assert(gNodes);
++    assert(gNodeNames);
++  }
+   for (i = 1; i < nrNodes; i++) {
+     if (gNodes[i].nr_branch == 0) {
+-      anthy_log(0, "node %s has no branch.\n", gNodeNames);
++      anthy_log(0, "node %s has no branch.\n",
++                gNodeNames ? gNodeNames[i] : "(null)");
+     }
+   }
+ }
+@@ -278,12 +309,28 @@ init_depword_tab(void)
+ static void
+ parse_indep(char **tokens, int nr)
+ {
++  struct wordseq_rule *tmp = NULL;
+   if (nr < 2) {
+     printf("Syntex error in indepword defs"
+ 	   " :%d.\n", anthy_get_line_number());
+     return ;
+   }
+-  gRules = realloc(gRules, sizeof(struct wordseq_rule)*(nrRules+1));
++  if (!(tmp = realloc(gRules, sizeof(struct wordseq_rule)*(nrRules+1)))) {
++    anthy_log(0, "Could not realloc gRules.\n");
++    /* CPPCHECK_WARNING and CLANG_WARNING are conflicted.
++     * CPPCHECK_WARNING reports: Common realloc mistake:
++     *     'gRules' nulled but not freed upon failure
++     * also CLANG_WARNING reports: Potential leak of memory ponted to by
++     *     'gRules'
++     * On the other hand,
++     * CLANG_WARNING reports: 'gRules' is freed twice.
++     */
++    free(gRules);
++    gRules = NULL;
++    nrRules = 0;
++    return;
++  }
++  gRules= tmp;
+ 
+   /* 行の先頭には品詞の名前が入っている */
+   gRules[nrRules].wt = anthy_init_wtype_by_name(tokens[0]);
+@@ -295,7 +342,7 @@ parse_indep(char **tokens, int nr)
+     printf("%d (%s)\n", nrRules, tokens[0]);
+   }
+ 
+-  nrRules ++;
++  nrRules++;
+ }
+ 
+ /** 自立語からの遷移表 */
+@@ -405,6 +452,11 @@ write_file(const char* file_name)
+   FILE* fp = fopen(file_name, "w");
+   int* node_offset = malloc(sizeof(int) * nrNodes); /* gNodesのファイル上の位置 */
+ 
++  if (!fp) {
++    anthy_log(0, "Could not write-open %s.\n", file_name);
++    free(node_offset);
++    return;
++  }
+   /* 各ルール */
+   write_nl(fp, nrRules);
+   for (i = 0; i < nrRules; ++i) {
+@@ -414,6 +466,8 @@ write_file(const char* file_name)
+ 
+   write_nl(fp, nrNodes);
+ 
++  if (nrNodes > 0)
++    assert(gNodes);
+   for (i = 0; i < nrNodes; ++i) {
+     write_node(fp, &gNodes[i]);
+   }
+diff --git a/mkanthydic/mkfiledic.c b/mkanthydic/mkfiledic.c
+index 8611dae..f3e502b 100644
+--- a/mkanthydic/mkfiledic.c
++++ b/mkanthydic/mkfiledic.c
+@@ -18,7 +18,7 @@
+  *
+  * Copyright (C) 2005-2006 YOSHIDA Yuichi
+  * Copyright (C) 2006-2007 TABATA Yusuke
+- *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -40,8 +40,9 @@
+ #include <stdlib.h>
+ #include <sys/stat.h>
+ 
+-#include <anthy/xstr.h>
+ #include <anthy/diclib.h>
++#include <anthy/logger.h>
++#include <anthy/xstr.h>
+ 
+ #define SECTION_ALIGNMENT 64
+ #define DIC_NAME "anthy.dic"
+@@ -64,9 +65,10 @@ static int
+ get_file_size(const char* fn)
+ {
+   struct stat st;
+-  if (stat(fn, &st) < 0) {
++  if (!fn)
++    return -1;
++  if (stat(fn, &st) < 0)
+     return -1;
+-  }
+   return (st.st_size + SECTION_ALIGNMENT - 1) & (-SECTION_ALIGNMENT);
+ }
+ 
+@@ -74,6 +76,10 @@ static char *
+ get_file_name(const char *prefix, struct header_entry* entry)
+ {
+   char *fn = malloc(strlen(prefix) + strlen(entry->file_name) + 4);
++  if (!fn) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   sprintf(fn, "%s/%s", prefix, entry->file_name);
+   return fn;
+ }
+@@ -157,6 +163,8 @@ write_contents(FILE* fp, const char *prefix,
+     FILE* in_fp;
+     char *fn = get_file_name(prefix, &entries[i]);
+ 
++    if (!fn)
++      break;
+     in_fp = fopen(fn, "r");
+     if (in_fp == NULL) {
+       printf("failed to open %s\n", fn);
+diff --git a/mkworddic/calcfreq.c b/mkworddic/calcfreq.c
+index bb72b60..7743e16 100644
+--- a/mkworddic/calcfreq.c
++++ b/mkworddic/calcfreq.c
+@@ -1,5 +1,11 @@
+-/* ñ������٤�׻����� */
++/* 単語の頻度を計算する
++ *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
++ */
++
+ #include <stdlib.h>
++
++#include <anthy/logger.h>
+ #include "mkdic.h"
+ 
+ static int
+@@ -16,10 +22,11 @@ count_nr_words(struct yomi_entry_list *yl)
+ static struct word_entry **
+ make_word_array(struct yomi_entry_list *yl, int nr)
+ {
+-  struct word_entry **array = malloc(sizeof(struct word_entry *) *
+-				    nr);
++  struct word_entry **array;
+   int nth = 0;
+   struct yomi_entry *ye;
++  if (!(array = malloc(sizeof(struct word_entry *) * nr)))
++    return NULL;
+   for (ye = yl->head; ye; ye = ye->next) {
+     int i;
+     for (i = 0; i < ye->nr_entries; i++) {
+@@ -30,7 +37,7 @@ make_word_array(struct yomi_entry_list *yl, int nr)
+   return array;
+ }
+ 
+-/** qsort�Ѥ���Ӵؿ� */
++/** qsort用の比較関数 */
+ static int
+ compare_word_entry_by_freq(const void *p1, const void *p2)
+ {
+@@ -47,7 +54,11 @@ set_freq(struct word_entry **array, int nr)
+   percent = percent ? percent : 1;
+   for (i = 0; i < nr; i++) {
+     struct word_entry *we = array[i];
+-    we->freq = 99 - (i / percent);
++    /* Effect よのなかほんとうにべんりになった in test/test.txt
++     * 便利 vs 弁理
++     * べんり #T05*300 便利 #T35*180 弁理 in alt-cannadic/gcanna.ctd
++     */
++    we->freq = (int)(99.0 - ((double)i / percent));
+     if (we->freq < 1) {
+       we->freq = 1;
+     }
+@@ -66,7 +77,10 @@ calc_freq(struct yomi_entry_list *yl)
+   struct word_entry **we;
+   /**/
+   nr = count_nr_words(yl);
+-  we = make_word_array(yl, nr);
++  if (!(we = make_word_array(yl, nr))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
+   /**/
+   qsort(we, nr,
+ 	sizeof(struct word_entry *),
+diff --git a/mkworddic/mkdic.c b/mkworddic/mkdic.c
+index eb042e4..b0f9f4c 100644
+--- a/mkworddic/mkdic.c
++++ b/mkworddic/mkdic.c
+@@ -6,6 +6,7 @@
+  * Copyright (C) 2000-2007 TABATA Yusuke
+  * Copyright (C) 2005 YOSHIDA Yuichi
+  * Copyright (C) 2001-2002 TAKAI Kousuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+  * 辞書は読みをindexとし、品詞や変換後の単語(=entry)を検索
+@@ -34,20 +35,22 @@
+ 
+ #include <sys/types.h>
+ #include <unistd.h>
++#include <assert.h>
++#include <errno.h>
++#include <ctype.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+-#include <errno.h>
+-#include <ctype.h>
+ 
+ #include <config.h>
+ 
+ #include <anthy/anthy.h>
+-#include <anthy/xstr.h>
+-#include <anthy/wtype.h>
++#include <anthy/diclib.h>
++#include <anthy/logger.h>
+ #include <anthy/ruleparser.h>
+ #include <anthy/word_dic.h>
+-#include <anthy/diclib.h>
++#include <anthy/wtype.h>
++#include <anthy/xstr.h>
+ #include "mkdic.h"
+ 
+ #define MAX_LINE_LEN 10240
+@@ -104,31 +107,32 @@ static void
+ open_output_files(void)
+ {
+   struct file_section *fs;
++  char *tmpdir = getenv("TMPDIR");
++  tmpdir = tmpdir ? strdup (tmpdir) : strdup ("/tmp");
+   for (fs = file_array; fs->fpp; fs ++) {
+-    char *tmpdir = getenv("TMPDIR");
++    char buf[256];
++    int fd = -1;
++    /* tmpfile()がTMPDIRを見ないため、TMPDIRを指定された場合mkstempを使う。
++     * tmpfile() creates files with predictable names, which is unsafe and
++     * is not recommended.
++     */
+     fs->fn = NULL;
+-    if (tmpdir) {
+-      /* tmpfile()がTMPDIRを見ないため、TMPDIRを指定された場合mkstempを使う。*/
+-      char buf[256];
+-      int fd = -1;
+-      snprintf(buf, sizeof(buf), "%s/mkanthydic.XXXXXX", tmpdir);
+-      fd = mkstemp(buf);
+-      if (fd == -1) {
+-	*(fs->fpp) = NULL;
+-      } else {
+-	*(fs->fpp) = fdopen(fd, "w+");
+-	fs->fn = strdup(buf);
+-      }
++    snprintf(buf, sizeof(buf), "%s/mkanthydic.XXXXXX", tmpdir);
++    fd = mkstemp(buf);
++    if (fd == -1) {
++      *(fs->fpp) = NULL;
+     } else {
+-      *(fs->fpp) = tmpfile();
++      *(fs->fpp) = fdopen(fd, "w+");
++      fs->fn = strdup(buf);
+     }
+     /**/
+     if (!(*(fs->fpp))) {
+       fprintf (stderr, "%s: cannot open temporary file: %s\n",
+-	       progname, strerror (errno));
++               progname, strerror (errno));
+       exit (2);
+     }
+   }
++  free(tmpdir);
+ }
+ 
+ /* fflushする */
+@@ -214,6 +218,7 @@ get_entry_from_line(char *buf)
+ {
+   char *sp;
+   sp = strchr(buf, ' ');
++  assert(sp);
+   while(*sp == ' ') {
+     sp ++;
+   }
+@@ -275,7 +280,7 @@ push_back_word_entry(struct mkdic_stat *mds,
+     s = strdup(word);
+   }
+   ye->entries[ye->nr_entries].word_utf8 = s;
+-  ye->nr_entries ++;
++  ye->nr_entries++;
+ }
+ 
+ static int
+@@ -432,8 +437,8 @@ static int
+ check_same_word(struct yomi_entry *ye, int idx)
+ {
+   struct word_entry *base = &ye->entries[idx];
+-  int i;
+-  for (i = idx -1; i >= 0; i--) {
++  int i = idx - 1;
++  if (i >= 0) {
+     struct word_entry *cur = &ye->entries[i];
+     if (base->raw_freq != cur->raw_freq) {
+       return 0;
+@@ -535,7 +540,7 @@ find_yomi_entry(struct yomi_entry_list *yl, xstr *index, int create)
+   ye->next = yl->head;
+   yl->head = ye;
+ 
+-  yl->nr_entries ++;
++  yl->nr_entries++;
+ 
+   return ye;
+ }
+@@ -563,7 +568,10 @@ mk_yomi_hash(FILE *yomi_hash_out, struct yomi_entry_list *yl)
+   unsigned char *hash_array;
+   int i;
+   struct yomi_entry *ye;
+-  hash_array = (unsigned char *)malloc(YOMI_HASH_ARRAY_SIZE);
++  if (!(hash_array = (unsigned char *)malloc(YOMI_HASH_ARRAY_SIZE))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
+   for (i = 0; i < YOMI_HASH_ARRAY_SIZE; i++) {
+     hash_array[i] = 0;
+   }
+@@ -574,7 +582,7 @@ mk_yomi_hash(FILE *yomi_hash_out, struct yomi_entry_list *yl)
+   fwrite(hash_array, YOMI_HASH_ARRAY_SIZE, 1, yomi_hash_out);
+   printf("generated yomi hash bitmap (%d collisions/%d entries)\n",
+ 	 yomi_hash_collision, yl->nr_valid_entries);
+-	 
++  free(hash_array);
+ }
+ 
+ static struct adjust_command *
+@@ -590,22 +598,20 @@ parse_modify_freq_command (const char        *buf,
+   wt = strtok (NULL, " ");
+   word = strtok (NULL, " ");
+   type_str = strtok (NULL, " ");
+-  if (!yomi || !wt || !word || !type_str) {
++  if (!yomi || !wt || !word || !type_str)
+     return NULL;
+-  }
+-  if (!strcmp (type_str, "up")) {
++  if (!strcmp (type_str, "up"))
+     type = ADJUST_FREQ_UP;
+-  }
+-  if (!strcmp (type_str, "down")) {
++  if (!strcmp (type_str, "down"))
+     type = ADJUST_FREQ_DOWN;
+-  }
+-  if (!strcmp (type_str, "kill")) {
++  if (!strcmp (type_str, "kill"))
+     type = ADJUST_FREQ_KILL;
+-  }
+-  if (!type) {
++  if (!type)
++    return NULL;
++  if (!(cmd = malloc (sizeof (struct adjust_command)))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
+     return NULL;
+   }
+-  cmd = malloc (sizeof (struct adjust_command));
+   cmd->type = type;
+   cmd->yomi = anthy_cstr_to_xstr (yomi, mds->input_encoding);
+   cmd->wt = get_wt_name(wt);
+@@ -691,8 +697,9 @@ apply_adjust_command(struct yomi_entry_list *yl,
+ {
+   struct adjust_command *cmd;
+   for (cmd = ac_list->next; cmd; cmd = cmd->next) {
+-    struct word_entry *we = find_word_entry(yl, cmd->yomi,
+-					    cmd->wt, cmd->word);
++    struct word_entry *we;
++    assert(cmd);
++    we = find_word_entry(yl, cmd->yomi, cmd->wt, cmd->word);
+     if (!we) {
+       char *yomi = anthy_xstr_to_cstr(cmd->yomi, ANTHY_UTF8_ENCODING);
+       printf("failed to find target of adjust command (%s, %s, %s)\n",
+@@ -732,11 +739,14 @@ sort_word_dict(struct yomi_entry_list *yl)
+   struct yomi_entry *ye;
+   yl->nr_valid_entries = 0;
+   /* 単語を持つ読みだけを yl->ye_arrayに詰め直す */
+-  yl->ye_array = malloc(sizeof(struct yomi_entry *) * yl->nr_entries);
++  if (!(yl->ye_array = malloc(sizeof(struct yomi_entry *) * yl->nr_entries))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
+   for (i = 0, ye = yl->head; i < yl->nr_entries; i++, ye = ye->next) {
+     if (ye->nr_entries > 0) {
+       yl->ye_array[yl->nr_valid_entries] = ye;
+-      yl->nr_valid_entries ++;
++      yl->nr_valid_entries++;
+     }
+   }
+   /**/
+@@ -984,7 +994,10 @@ build_reverse_dict(struct mkdic_stat *mds)
+   /* コピーする
+    * (元の辞書中のポインタはreallocで動くのでコピーが必要)
+    */
+-  we_array = malloc(sizeof(struct word_entry )* n);
++  if (!(we_array = malloc(sizeof(struct word_entry )* n))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
+   n = 0;
+   for (ye = mds->yl.head; ye; ye = ye->next) {
+     for (i = 0; i < ye->nr_entries; i++) {
+@@ -1041,12 +1054,32 @@ static void
+ set_exclude_wtypes(struct mkdic_stat *mds, int nr, char **tokens)
+ {
+   int i;
++  assert(nr > 0);
+   mds->nr_excluded = nr - 1;
+-  mds->excluded_wtypes = malloc(sizeof(char *) * (nr - 1));
++  if (nr == 1) {
++    anthy_log(0, "nr == 1 in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
++  if (!(mds->excluded_wtypes = malloc(sizeof(char *) * (nr - 1)))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    mds->nr_excluded = 0;
++    return;
++  }
+   /**/
+-  for (i = 1; i < nr; i++) {
++  mds->excluded_wtypes[0] = NULL;
++  for (i = 1; i < nr; i++)
+     mds->excluded_wtypes[i - 1] = strdup(tokens[i]);
++}
++
++static void
++free_exclude_wtypes(struct mkdic_stat *mds)
++{
++  int i;
++  for (i = 0; i < mds->nr_excluded; i++) {
++    free (mds->excluded_wtypes[i]);
+   }
++  free (mds->excluded_wtypes);
++  mds->excluded_wtypes = NULL;
+ }
+ 
+ static void
+@@ -1098,14 +1131,18 @@ show_command(char **tokens, int nr)
+ static int
+ execute_batch(struct mkdic_stat *mds, const char *fn)
+ {
+-  int nr;
+-  char **tokens;
++  int nr = 0;
++  char **tokens = NULL;
+   if (anthy_open_file(fn)) {
+     printf("mkanthydic: failed to open %s\n", fn);
+     return 1;
+   }
+   while (!anthy_read_line(&tokens, &nr)) {
+-    char *cmd = tokens[0];
++    char *cmd;
++    if (!nr)
++      break;
++    assert(nr > 0);
++    cmd = tokens[0];
+     show_command(tokens, nr);
+     if (!strcmp(cmd, "read") && nr == 2) {
+       read_dict_file(mds, tokens[1]);
+@@ -1160,6 +1197,29 @@ init_mds(struct mkdic_stat *mds)
+   mds->excluded_wtypes = NULL;
+ }
+ 
++static void
++free_yomi_entry_list(struct yomi_entry_list *yl)
++{
++  struct yomi_entry *ye, *ye_prev;
++  int i;
++
++  free (yl->ye_array);
++  yl->ye_array = NULL;
++  for (i = 0, ye = yl->head; ye && (i < yl->nr_entries); i++) {
++    free (ye->index_xstr->str);
++    free (ye->index_xstr);
++    ye->index_xstr = NULL;
++    free (ye->index_str);
++    ye->index_str = NULL;
++    free (ye->entries);
++    ye->entries = NULL;
++    ye->hash_next = NULL;
++    ye_prev = ye;
++    ye = ye->next;
++    free (ye_prev);
++  }
++}
++
+ /* libanthyの使用する部分だけを初期化する */
+ static void
+ init_libs(void)
+@@ -1180,6 +1240,7 @@ main(int argc, char **argv)
+   int i;
+   char *script_fn = NULL;
+   int help_mode = 0;
++  int retval;
+ 
+   anthy_init_wtypes();
+   init_libs();
+@@ -1200,5 +1261,10 @@ main(int argc, char **argv)
+     print_usage();
+   }
+ 
+-  return execute_batch(&mds, script_fn);
++  retval = execute_batch(&mds, script_fn);
++  free_yomi_entry_list(&mds.yl);
++  free_exclude_wtypes(&mds);
++  free_uc_dict(mds.ud);
++  mds.ud = NULL;
++  return retval;
+ }
+diff --git a/mkworddic/mkdic.h b/mkworddic/mkdic.h
+index 3885c4f..ec09ec0 100644
+--- a/mkworddic/mkdic.h
++++ b/mkworddic/mkdic.h
+@@ -85,6 +85,7 @@ const char *get_wt_name(const char *name);
+  * 用例辞書を作る */
+ struct uc_dict *create_uc_dict(void);
+ void read_uc_file(struct uc_dict *ud, const char *fn);
++void free_uc_dict(struct uc_dict *dict);
+ void make_ucdict(FILE *out, struct uc_dict *uc);
+ /**/
+ 
+diff --git a/mkworddic/mkudic.c b/mkworddic/mkudic.c
+index 1bdf6ee..12d0a78 100644
+--- a/mkworddic/mkudic.c
++++ b/mkworddic/mkudic.c
+@@ -2,11 +2,13 @@
+  * 用例辞書を作る
+  *
+  * Copyright (C) 2003-2005 TABATA Yusuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ #include <stdlib.h>
+ #include <string.h>
+ #include <stdio.h>
+ 
++#include <anthy/logger.h>
+ #include <anthy/matrix.h>
+ #include "mkdic.h"
+ 
+@@ -54,7 +56,10 @@ commit_uc(struct uc_dict *dict, int x, int y)
+   if (x < 0 || y < 0) {
+     return ;
+   }
+-  uc = malloc(sizeof(struct use_case));
++  if (!(uc = malloc(sizeof(struct use_case)))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
+   uc->id[0] = x;
+   uc->id[1] = y;
+   /**/
+@@ -68,6 +73,10 @@ struct uc_dict *
+ create_uc_dict(void)
+ {
+   struct uc_dict *dict = malloc(sizeof(struct uc_dict));
++  if (!dict) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+ 
+   dict->uc_head.next = NULL;
+   dict->nr_ucs = 0;
+@@ -120,6 +129,22 @@ read_uc_file(struct uc_dict *dict, const char *fn)
+     }
+     off ++;
+   }
++  fclose(uc_file);
++}
++
++void
++free_uc_dict(struct uc_dict *dict)
++{
++  struct use_case *uc, *prev_uc;
++
++  if (!dict)
++    return;
++  for (uc = dict->uc_head.next; uc; ) {
++    prev_uc = uc;
++    uc = uc->next;
++    free (prev_uc);
++  }
++  free (dict);
+ }
+ 
+ /* 用例辞書をファイルに書き出す */
+@@ -148,5 +173,7 @@ make_ucdict(FILE *uc_out, struct uc_dict *dict)
+   } else {
+     printf("udic: no use examples.\n");
+   }
+-
++  anthy_sparse_matrix_free(sm);
++  free(mi->image);
++  free(mi);
+ }
+diff --git a/mkworddic/writewords.c b/mkworddic/writewords.c
+index d8eead7..e6e767c 100644
+--- a/mkworddic/writewords.c
++++ b/mkworddic/writewords.c
+@@ -7,6 +7,7 @@
+  * output_word_dict()が呼び出される
+  *
+  * Copyright (C) 2000-2006 TABATA Yusuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -126,7 +127,7 @@ static int
+ common_len(xstr *s1, xstr *s2)
+ {
+   int m,i;
+-  if (!s1 || !s2) {
++  if ((!s1) || (!s2)) {
+     return 0;
+   }
+   if (s1->len < s2->len) {
+diff --git a/src-diclib/conf.c b/src-diclib/conf.c
+index 810bf80..271052d 100644
+--- a/src-diclib/conf.c
++++ b/src-diclib/conf.c
+@@ -4,6 +4,7 @@
+  * 変数の関係に注意
+  *
+  * Copyright (C) 2000-2007 TABATA Yusuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -20,6 +21,7 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <assert.h>
+ #include <unistd.h>
+ #include <pwd.h>
+ #include <time.h>
+@@ -89,7 +91,13 @@ get_subst(const char *s)
+       strchr(s, '}')) {
+     struct val_ent *val;
+     char *var = strdup(&s[2]);
+-    char *k = strchr(var, '}');
++    char *k;
++    if (!var) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      return NULL;
++    }
++    k = strchr(var, '}');
++    assert(k);
+     *k = 0;
+     val = find_val_ent(var);
+     free(var);
+@@ -125,7 +133,10 @@ expand_string(const char *s)
+   struct expand_buf eb;
+   char *res;
+   eb.size = 256;
+-  eb.buf = malloc(eb.size);
++  if (!(eb.buf = malloc(eb.size))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   eb.cur = eb.buf;
+   eb.len = 0;
+ 
+@@ -139,13 +150,14 @@ expand_string(const char *s)
+       eb.cur += len;
+       eb.len += len;
+       s = strchr(s, '}');
+-      s ++;
++      assert(s);
++      s++;
+     } else {
+       *eb.cur = *s;
+       /**/
+-      eb.cur ++;
++      eb.cur++;
+       s++;
+-      eb.len ++;
++      eb.len++;
+     }
+     /**/
+     ensure_buffer(&eb, 256);
+diff --git a/src-diclib/diclib_inner.h b/src-diclib/diclib_inner.h
+index 9da45ab..1b0f277 100644
+--- a/src-diclib/diclib_inner.h
++++ b/src-diclib/diclib_inner.h
+@@ -17,7 +17,7 @@ typedef enum
+ /* file_dic.h */
+ int anthy_init_file_dic(void);
+ void anthy_quit_file_dic(void);
+-
++int anthy_file_test(const char   *filename, AnthyFileTest test);
+ 
+ /* xchar.c */
+ void anthy_init_xchar_tab(void);
+diff --git a/src-diclib/file_dic.c b/src-diclib/file_dic.c
+index 2869648..5602ff0 100644
+--- a/src-diclib/file_dic.c
++++ b/src-diclib/file_dic.c
+@@ -121,7 +121,7 @@ anthy_path_skip_root (const char *file_name)
+ /* anthy_file_test:
+  * Copy from g_file_test()
+  */
+-static int
++int
+ anthy_file_test (const char   *filename,
+                  AnthyFileTest test)
+ {
+diff --git a/src-diclib/filemap.c b/src-diclib/filemap.c
+index c810719..1e228eb 100644
+--- a/src-diclib/filemap.c
++++ b/src-diclib/filemap.c
+@@ -4,7 +4,7 @@
+  * *将来的には一つのファイルを複数の目的にmapすることも考慮
+  *
+  * Copyright (C) 2005 TABATA Yusuke
+- *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -89,7 +89,11 @@ anthy_mmap(const char *fn, int wr)
+   }
+ 
+   /* mmapに成功したので情報を返す */
+-  m = malloc(sizeof(struct filemapping));
++  if (!(m = malloc(sizeof(struct filemapping)))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    munmap(ptr, st.st_size);
++    return NULL;
++  }
+   m->size = st.st_size;
+   m->ptr = ptr;
+   m->wr = wr;
+diff --git a/src-diclib/logger.c b/src-diclib/logger.c
+index 6e6d402..233a488 100644
+--- a/src-diclib/logger.c
++++ b/src-diclib/logger.c
+@@ -1,9 +1,11 @@
+ /*
+  * ログの出力
+  * $Id: logger.c,v 1.8 2002/05/14 13:24:47 yusuke Exp $
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ #include <stdio.h>
+ #include <stdarg.h>
++#include <string.h>
+ 
+ #include <anthy/anthy.h>
+ #include <anthy/logger.h>
+@@ -46,3 +48,24 @@ anthy_set_logger(anthy_logger lg, int level)
+ {
+   anthy_do_set_logger(lg, level);
+ }
++
++const char *
++anthy_strerror (int errnum)
++{
++  const char *msg;
++  static char buf[1024];
++
++#if defined(HAVE_STRERROR_R)
++#  if defined(__GLIBC__) && !((_POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 600) && ! _GNU_SOURCE)
++      msg = strerror_r (errnum, buf, sizeof (buf));
++#  else
++      strerror_r (errnum, buf, sizeof (buf));
++      msg = buf;
++#  endif /* HAVE_STRERROR_R */
++#else
++      strncpy (buf, strerror (errnum), sizeof (buf));
++      buf[sizeof (buf) - 1] = '\0';
++      msg = buf;
++#endif
++  return msg;
++}
+diff --git a/src-diclib/ruleparser.c b/src-diclib/ruleparser.c
+index d83deac..7a40e37 100644
+--- a/src-diclib/ruleparser.c
++++ b/src-diclib/ruleparser.c
+@@ -3,6 +3,7 @@
+  * 汎用のファイル読み込みモジュール
+  *
+  * Copyright (C) 2000-2006 TABATA Yusuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  */
+ /*
+@@ -21,6 +22,7 @@
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
+ #include <ctype.h>
++#include <limits.h>
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
+@@ -137,9 +139,11 @@ get_token_in(struct line_stat *ls)
+   }
+   /* トークンが始まるまで空白を読み飛ばす */
+   do {
++    /* tainted cc should be sanitized */
++    cc = 0;
+     esc = mygetc(&cc);
+-  } while (cc > 0 && myisblank(cc) && esc == 0);
+-  if (cc == -1) {
++  } while (cc != EOF && cc > 0 && cc < INT_MAX && myisblank(cc) && esc == 0);
++  if (cc == EOF) {
+     return NULL;
+   }
+   if (cc == '\n'){
+@@ -209,7 +213,8 @@ proc_include(void)
+     anthy_log(0, "Syntax error in include directive.\n");
+     return ;
+   }
+-  if (g_ps.cur_fpp > MAX_INCLUDE_DEPTH - 1) {
++  /* (i + 1) should < MAX_INCLUDE_DEPTH for g_ps.fp_stack[i + 1] */
++  if (g_ps.cur_fpp >= MAX_INCLUDE_DEPTH - 1) {
+     anthy_log(0, "Too deep include.\n");
+     return ;
+   }
+diff --git a/src-diclib/xstr.c b/src-diclib/xstr.c
+index 018a63d..21f3e04 100644
+--- a/src-diclib/xstr.c
++++ b/src-diclib/xstr.c
+@@ -11,7 +11,7 @@
+  *  cstrはCの普通のEUC文字列
+  *
+  * Copyright (C) 2000-2007 TABATA Yusuke
+- *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -28,6 +28,7 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <assert.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -35,6 +36,7 @@
+ #include "config.h"
+ /* for ANTHY_*_ENCODING */
+ #include <anthy/anthy.h>
++#include <anthy/logger.h>
+ 
+ #include <anthy/xstr.h>
+ #include <anthy/xchar.h>
+@@ -217,7 +219,8 @@ anthy_xstr_to_cstr(xstr *s, int encoding)
+       l++;
+     }
+   }
+-  p = (char *)malloc(l + 1);
++  if (!(p = (char *)malloc(l + 1)))
++    return NULL;
+   p[l] = 0;
+   j = 0;
+   for (i =  0; i < s->len; i++) {
+@@ -240,9 +243,13 @@ anthy_xstr_dup(xstr *s)
+ {
+   int i;
+   xstr *x = (xstr *)malloc(sizeof(xstr));
++  if (!x)
++    return NULL;
+   x->len = s->len;
+   if (s->len) {
+-    x->str = malloc(sizeof(xchar)*s->len);
++    assert(s->str);
++    if (!(x->str = malloc(sizeof(xchar)*s->len)))
++      return x;
+   }else{
+     x->str = NULL;
+   }
+@@ -258,8 +265,10 @@ anthy_xstr_dup_str(xstr *s)
+   xchar *c;
+   int i;
+   if (s->len) {
+-    c = malloc(sizeof(xchar)*s->len);
+-  }else{
++    assert(s->str);
++    if (!(c = malloc(sizeof(xchar)*s->len)))
++      return NULL;
++  } else {
+     c = 0;
+   }
+   for (i = 0; i < s->len; i++) {
+@@ -443,8 +452,11 @@ xstr *
+ anthy_xstrcat(xstr *s, xstr *a)
+ {
+   int i, l;
++  xchar *xch;
+   if (!s) {
+     s = malloc(sizeof(xstr));
++    if (!s)
++      return NULL;
+     s->str = NULL;
+     s->len = 0;
+   }
+@@ -457,7 +469,16 @@ anthy_xstrcat(xstr *s, xstr *a)
+     return s;
+   }
+ 
++  xch = s->str;
+   s->str = realloc(s->str, sizeof(xchar)*l);
++  if (!s->str) {
++    anthy_log(0, "Failed realloc in %s:%d\n", __FILE__, __LINE__);
++    s->str = xch;
++    s->len = l - a->len;
++    return s;
++  }
++  if (a->len)
++    assert(a->str);
+   for (i = 0; i < a->len; i ++) {
+     s->str[s->len+i] = a->str[i];
+   }
+@@ -480,14 +501,14 @@ long long
+ anthy_xstrtoll(xstr *x)
+ {
+   xchar c;
+-  int i;
++  int i, t = XCT_NONE;
+   long long n = 0;/* 数 */
+-  if (!x->len || x->len > 16) {
++  if (!x->len || x->len > 16)
+     return -1;
+-  }
+-  if ((!anthy_get_xstr_type(x)) & (XCT_NUM | XCT_WIDENUM)) {
++  for (i = 0; i < x->len; i++)
++    t |= anthy_get_xchar_type(x->str[i]);
++  if (!(t & (XCT_NUM | XCT_WIDENUM)))
+     return -1;
+-  }
+   for (i = 0; i < x->len; i++) {
+     c = x->str[i];
+     n *= 10;
+@@ -503,7 +524,15 @@ anthy_xstr_wide_num_to_num(xstr* src_xs)
+ {
+   int i;
+   xstr *dst_xs;
+-  dst_xs = anthy_xstr_dup(src_xs);
++  if (!(dst_xs = anthy_xstr_dup(src_xs))) {
++    anthy_log(0, "Failed anthy_xstr_dup() in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
++  assert(src_xs);
++  if (src_xs->len) {
++    assert(src_xs->str);
++    assert(dst_xs->str);
++  }
+   for (i = 0; i < src_xs->len; ++i) {
+     dst_xs->str[i] = anthy_xchar_wide_num_to_num(src_xs->str[i]);
+   }
+@@ -518,6 +547,15 @@ anthy_xstr_hira_to_kata(xstr *src_xs)
+   xstr *dst_xs;
+   int i, j;
+   dst_xs = anthy_xstr_dup(src_xs);
++  if (!dst_xs) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
++  if (dst_xs->len && !dst_xs->str) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    dst_xs->len = 0;
++    return dst_xs;
++  }
+ 
+   for (i = 0 ,j = 0; i < dst_xs->len; i++, j++) {
+     /* 「う゛」のチェック */
+@@ -553,8 +591,20 @@ anthy_xstr_hira_to_half_kata(xstr *src_xs)
+     }
+   }
+   xs = malloc(sizeof(xstr));
++  if (!xs) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   xs->len = len;
+   xs->str = malloc(sizeof(xchar) * len);
++  if (len) {
++    assert(src_xs->str);
++    if (!xs->str) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      xs->len = 0;
++      return xs;
++    }
++  }
+   j = 0;
+   for (i = 0; i < src_xs->len; i++) {
+     const struct half_kana_table *tab = anthy_find_half_kana(src_xs->str[i]);
+@@ -583,6 +633,18 @@ anthy_conv_half_wide(xstr *xs)
+     }
+   }
+   res = anthy_xstr_dup(xs);
++  if (!res) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
++  if (xs->len > 0) {
++    assert(xs->str);
++    if (!res->str) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      res->len = 0;
++      return res;
++    }
++  }
+   for (i = 0; i < xs->len; i++) {
+     res->str[i] = anthy_lookup_half_wide(xs->str[i]);
+   }
+diff --git a/src-main/context.c b/src-main/context.c
+index 1b211db..20dde71 100644
+--- a/src-main/context.c
++++ b/src-main/context.c
+@@ -8,6 +8,7 @@
+  *
+  * Funded by IPA未踏ソフトウェア創造事業 2001 10/29
+  * Copyright (C) 2000-2007 TABATA Yusuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  * $Id: context.c,v 1.26 2002/11/17 14:45:47 yusuke Exp $
+  */
+@@ -26,16 +27,20 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <assert.h>
++#include <fcntl.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
++#include <errno.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+ 
+ #include <anthy/anthy.h>
+ #include <anthy/alloc.h>
++#include <anthy/logger.h>
+ #include <anthy/record.h>
+ #include <anthy/ordering.h>
+ #include <anthy/splitter.h>
+@@ -81,10 +86,15 @@ release_segment(struct seg_ent *s)
+       anthy_release_cand_ent(s->cands[i]);
+     }
+     free (s->cands);
+-  }
+-  if (s->mw_array) {
+-    free(s->mw_array);
+-  }
++    s->cands = NULL;
++  }
++  free(s->mw_array);
++  s->mw_array = NULL;
++  s->best_mw = NULL;
++  s->str.str = NULL;
++  s->str.len = 0;
++  s->next = NULL;
++  s->prev = NULL;
+   free(s);
+ 
+ }
+@@ -96,12 +106,13 @@ pop_back_seg_ent(struct anthy_context *c)
+   struct seg_ent *s;
+   s = c->seg_list.list_head.prev;
+   if (s == &c->seg_list.list_head) {
+-    return ;
++    return;
+   }
+   s->prev->next = s->next;
+   s->next->prev = s->prev;
++  c->seg_list.list_head.prev = s->next->prev;
+   release_segment(s);
+-  c->seg_list.nr_segments --;
++  c->seg_list.nr_segments--;
+ }
+ 
+ 
+@@ -174,7 +185,10 @@ create_segment(struct anthy_context *ac, int from, int len,
+ 	       struct meta_word* best_mw)
+ {
+   struct seg_ent* s;
+-  s = (struct seg_ent *)malloc(sizeof(struct seg_ent));
++  if (!(s = (struct seg_ent *)malloc(sizeof(struct seg_ent)))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   s->str.str = &ac->str.str[from];
+   s->str.len = len;
+   s->from = from;
+@@ -191,6 +205,7 @@ create_segment(struct anthy_context *ac, int from, int len,
+ static void
+ push_back_segment(struct anthy_context *ac, struct seg_ent *se)
+ {
++  assert(se);
+   se->next = &ac->seg_list.list_head;
+   se->prev = ac->seg_list.list_head.prev;
+   ac->seg_list.list_head.prev->next = se;
+@@ -236,7 +251,10 @@ anthy_do_create_context(int encoding)
+     return NULL;
+   }
+ 
+-  ac = (struct anthy_context *)anthy_smalloc(context_ator);
++  if (!(ac = (struct anthy_context *)anthy_smalloc(context_ator))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   ac->str.str = NULL;
+   ac->str.len = 0;
+   ac->seg_list.nr_segments = 0;
+@@ -383,15 +401,20 @@ anthy_do_resize_segment(struct anthy_context *ac,
+ 
+   /* resizeが可能か検査する */
+   if (nth >= ac->seg_list.nr_segments) {
+-    return ;
++    return;
+   }
+   index = get_nth_segment_index(ac, nth);
+   len = get_nth_segment_len(ac, nth);
+   if (index + len + resize > ac->str.len) {
+-    return ;
++    return;
+   }
+   if (len + resize < 1) {
+-    return ;
++    return;
++  }
++  if (index < 0) {
++    anthy_log(0, "Wrong segment index for %dth %s:%d\n",
++              nth, __FILE__, __LINE__);
++    return;
+   }
+ 
+   /* nth以降のseg_entを解放する */
+@@ -454,7 +477,7 @@ anthy_do_set_prediction_str(struct anthy_context *ac, xstr* xs)
+     }
+   }
+ 
+-  prediction->str.str = (xchar*)malloc(sizeof(xchar*)*(xs->len+1));
++  prediction->str.str = (xchar*)malloc(sizeof(xchar) * (xs->len + 1));
+   anthy_xstrcpy(&prediction->str, xs);
+   prediction->str.str[xs->len]=0;
+ 
+@@ -497,30 +520,31 @@ get_change_state(struct anthy_context *ac)
+ }
+ 
+ static void
+-write_history(FILE *fp, struct anthy_context *ac)
++write_history(int                   fd,
++              struct anthy_context *ac)
+ {
+   int i;
+   /* 読み */
+-  fprintf(fp, "|");
++  dprintf(fd, "|");
+   for (i = 0; i < ac->seg_list.nr_segments; i++) {
+     struct seg_ent *s = anthy_get_nth_segment(&ac->seg_list, i);
+     char *c = anthy_xstr_to_cstr(&s->str, ANTHY_EUC_JP_ENCODING);
+-    fprintf(fp, "%s|", c);
++    dprintf(fd, "%s|", c);
+     free(c);
+   }
+-  fprintf(fp, " |");
++  dprintf(fd, " |");
+   /* 結果 */
+   for (i = 0; i < ac->seg_list.nr_segments; i++) {
+     struct seg_ent *s = anthy_get_nth_segment(&ac->seg_list, i);
+     char *c;
+     /**/
+     if (s->committed < 0) {
+-      fprintf(fp, "?|");
++      dprintf(fd, "?|");
+       continue ;
+     }
+     c = anthy_xstr_to_cstr(&s->cands[s->committed]->str,
+ 			   ANTHY_EUC_JP_ENCODING);
+-    fprintf(fp, "%s|", c);
++    dprintf(fd, "%s|", c);
+     free(c);
+   }
+ }
+@@ -528,28 +552,37 @@ write_history(FILE *fp, struct anthy_context *ac)
+ void
+ anthy_save_history(const char *fn, struct anthy_context *ac)
+ {
+-  FILE *fp;
++  int fd;
+   struct stat st;
+   if (!fn) {
+-    return ;
++    return;
+   }
+-  fp = fopen(fn, "a");
+-  if (!fp) {
+-    return ;
++  /* TOCTOU: Use fchmod() and fstat(). chmod() after stat() can cause a
++   * time-of-check, time-of-use race condition.
++   */
++  errno = 0;
++  fd = open(fn, O_RDWR | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR);
++  if (fd == -1) {
++    anthy_log(0, "Failed to open %s: %s\n", fn, anthy_strerror(errno));
++    return;
+   }
+-  if (stat(fn, &st) ||
++  if (fstat(fd, &st) ||
+       st.st_size > HISTORY_FILE_LIMIT) {
+-    fclose(fp);
+-    return ;
++    close(fd);
++    return;
+   }
+   /**/
+-  fprintf(fp, "anthy-%s ", anthy_get_version_string());
+-  fprintf(fp, "%s ", get_change_state(ac));
+-  write_history(fp, ac);
+-  fprintf(fp, "\n");
+-  fclose(fp);
++  dprintf(fd, "anthy-%s ", anthy_get_version_string());
++  dprintf(fd, "%s ", get_change_state(ac));
++  write_history(fd, ac);
++  dprintf(fd, "\n");
+   /**/
+-  chmod(fn, S_IREAD | S_IWRITE);
++  errno = 0;
++  if (fchmod(fd, S_IREAD | S_IWRITE)) {
++    anthy_log(0, "Failed chmod in %s:%d: %s\n",
++              __FILE__, __LINE__, anthy_strerror(errno));
++  }
++  close(fd);
+ }
+ 
+ /** 候補を表示する */
+@@ -674,7 +707,10 @@ anthy_do_set_personality(const char *id)
+   if (!id || strchr(id, '/')) {
+     return -1;
+   }
+-  current_personality = strdup(id);
++  if (!(current_personality = strdup(id))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return -1;
++  }
+   anthy_dic_set_personality(current_personality);
+   return 0;
+ }
+diff --git a/src-main/main.c b/src-main/main.c
+index f492737..ae5c805 100644
+--- a/src-main/main.c
++++ b/src-main/main.c
+@@ -12,7 +12,7 @@
+  * Copyright (C) 2004-2006 YOSHIDA Yuichi
+  * Copyright (C) 2000-2007 KMC(Kyoto University Micro Computer Club)
+  * Copyright (C) 2001-2002 TAKAI Kosuke, Nobuoka Takahiro
+- *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -202,7 +202,7 @@ int
+ anthy_set_string(struct anthy_context *ac, const char *s)
+ {
+   xstr *xs;
+-  int retval;
++  int retval = 0;
+ 
+   if (!ac) {
+     return -1;
+@@ -227,7 +227,7 @@ anthy_set_string(struct anthy_context *ac, const char *s)
+   /**/
+   if (!need_reconvert(ac, xs)) {
+     /* 普通に変換する */
+-    retval = anthy_do_context_set_str(ac, xs, 0);
++    retval |= anthy_do_context_set_str(ac, xs, 0);
+   } else {
+     /* 漢字やカタカナが混じっていたら再変換してみる */
+     struct anthy_conv_stat stat;
+@@ -235,7 +235,7 @@ anthy_set_string(struct anthy_context *ac, const char *s)
+     int i;
+     xstr* hira_xs;
+     /* 与えられた文字列に変換をかける */
+-    retval = anthy_do_context_set_str(ac, xs, 1);
++    retval |= anthy_do_context_set_str(ac, xs, 1);
+ 
+     /* 各文節の第一候補を取得して平仮名列を得る */
+     anthy_get_stat(ac, &stat);
+@@ -246,7 +246,7 @@ anthy_set_string(struct anthy_context *ac, const char *s)
+     }
+     /* 改めて変換を行なう */
+     anthy_release_segment_list(ac);
+-    retval = anthy_do_context_set_str(ac, hira_xs, 0);
++    retval |= anthy_do_context_set_str(ac, hira_xs, 0);
+     anthy_free_xstr(hira_xs);
+   }
+ 
+diff --git a/src-ordering/candswap.c b/src-ordering/candswap.c
+index d2b2767..a512b24 100644
+--- a/src-ordering/candswap.c
++++ b/src-ordering/candswap.c
+@@ -8,9 +8,13 @@
+  *  自立語部:「田端」->「田畑」
+  *    の二つのエントリを追加する
+  *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
++ *
+  */
+ #include <stdlib.h>
++#include <stdio.h>
+ 
++#include <anthy/logger.h>
+ #include <anthy/record.h>
+ #include <anthy/segment.h>
+ /* for OCHAIRE_SCORE */
+@@ -106,10 +110,22 @@ prepare_swap_candidate(xstr *target)
+   }
+ 
+   if (!anthy_xstrcmp(target, n)) {
++    int i;
++    char buff[256];
+     /* 第一候補 -> xs -> n で n = 第一候補のループ */
+-    anthy_select_row(target, 0);
++    if (anthy_select_row(target, 0)) {
++      for (i = 0; i < 3 && i < target->len; i++)
++        sprintf (buff + i * 6, "%04X, ", target->str[i]);
++      anthy_log(0, "No current selection or Could not find %s in %s:%d.\n",
++                buff, __FILE__, __LINE__);
++    }
+     anthy_release_row();
+-    anthy_select_row(xs, 0);
++    if (anthy_select_row(xs, 0)) {
++      for (i = 0; i < 3 && i < xs->len; i++)
++        sprintf (buff + i * 6, "%04X, ", xs->str[i]);
++      anthy_log(0, "No current selection or Could not find %s in %s:%d.\n",
++                buff, __FILE__, __LINE__);
++    }
+     anthy_release_row();
+     /* 第一候補 -> xs を消して、交換の必要は無し */
+     return NULL;
+@@ -157,7 +173,8 @@ proc_swap_candidate_indep(struct seg_ent *se)
+   }
+ 
+   /**/
+-  anthy_select_section("INDEPPAIR", 1);
++  if (anthy_select_section("INDEPPAIR", 1))
++    anthy_log(0, "Failed to save INDEPPAIR in %s:%d.\n", __FILE__, __LINE__);
+   xs = prepare_swap_candidate(&key);
+   free(key.str);
+   if (!xs) {
+diff --git a/src-ordering/relation.c b/src-ordering/relation.c
+index 3db183a..651f48e 100644
+--- a/src-ordering/relation.c
++++ b/src-ordering/relation.c
+@@ -2,9 +2,9 @@
+  * 文節の関係を処理する
+  * Copyright (C) 2006 Higashiyama Masahiko (thanks google summer of code program)
+  * Copyright (C) 2002-2007 TABATA Yusuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  * anthy_reorder_candidates_by_relation()
+- *
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -427,10 +427,8 @@ anthy_relation_init(void)
+ {
+   corpus_info.corpus_array = anthy_file_dic_get_section("corpus_array");
+   corpus_info.corpus_bucket = anthy_file_dic_get_section("corpus_bucket");
+-  if (!corpus_info.corpus_array ||
+-      !corpus_info.corpus_array) {
++  if (!corpus_info.corpus_array || !corpus_info.corpus_bucket)
+     return ;
+-  }
+   corpus_info.array_size = ntohl(((int *)corpus_info.corpus_array)[1]);
+   corpus_info.bucket_size = ntohl(((int *)corpus_info.corpus_bucket)[1]);
+   corpus_info.array = &(((int *)corpus_info.corpus_array)[16]);
+diff --git a/src-splitter/compose.c b/src-splitter/compose.c
+index 998a157..70b841a 100644
+--- a/src-splitter/compose.c
++++ b/src-splitter/compose.c
+@@ -13,6 +13,7 @@
+  * Copyright (C) 2000-2005 TABATA Yusuke
+  * Copyright (C) 2004-2005 YOSHIDA Yuichi
+  * Copyright (C) 2002 UGAWA Tomoharu
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  * $Id: compose.c,v 1.25 2005/08/19 04:20:25 oxy Exp $
+  */
+@@ -31,11 +32,13 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <assert.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+ #include <anthy/dic.h>
++#include <anthy/logger.h>
+ #include <anthy/splitter.h>
+ #include <anthy/segment.h>
+ #include "wordborder.h"
+@@ -45,7 +48,10 @@ static struct cand_ent *
+ alloc_cand_ent(void)
+ {
+   struct cand_ent *ce;
+-  ce = (struct cand_ent *)malloc(sizeof(struct cand_ent));
++  if (!(ce = (struct cand_ent *)malloc(sizeof(struct cand_ent)))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   ce->nr_words = 0;
+   ce->elm = NULL;
+   ce->mw = NULL;
+@@ -62,18 +68,22 @@ dup_candidate(struct cand_ent *ce)
+ {
+   struct cand_ent *ce_new;
+   int i;
+-  ce_new = alloc_cand_ent();
++  if (!(ce_new = alloc_cand_ent()))
++    return NULL;
+   ce_new->nr_words = ce->nr_words;
+   ce_new->str.len = ce->str.len;
+   ce_new->str.str = anthy_xstr_dup_str(&ce->str);
+-  ce_new->elm = malloc(sizeof(struct cand_elm)*ce->nr_words);
++  if (!(ce_new->elm = malloc(sizeof(struct cand_elm)*ce->nr_words))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    ce_new->nr_words = 0;
++  }
+   ce_new->flag = ce->flag;
+   ce_new->core_elm_index = ce->core_elm_index;
+   ce_new->mw = ce->mw;
+   ce_new->score = ce->score;
+   ce_new->dep_word_hash = ce->dep_word_hash;
+ 
+-  for (i = 0 ; i < ce->nr_words ; i++) {
++  for (i = 0 ; i < ce_new->nr_words ; i++) {
+     ce_new->elm[i] = ce->elm[i];
+   }
+   return ce_new;
+@@ -84,9 +94,16 @@ static void
+ push_back_candidate(struct seg_ent *seg, struct cand_ent *ce)
+ {
+   /* seg_entに候補ceを追加 */
++  struct cand_ent **cands = seg->cands;
+   seg->nr_cands++;
+   seg->cands = (struct cand_ent **)
+     realloc(seg->cands, sizeof(struct cand_ent *) * seg->nr_cands);
++  if (!seg->cands) {
++    anthy_log(0, "Failed realloc in %s:%d\n", __FILE__, __LINE__);
++    seg->cands = cands;
++    seg->nr_cands--;
++    return;
++  }
+   seg->cands[seg->nr_cands - 1] = ce;
+   /**/
+   if (anthy_splitter_debug_flags() & SPLITTER_DEBUG_CAND) {
+@@ -143,6 +160,9 @@ enum_candidates(struct seg_ent *seg,
+     }
+     return 1;
+   }
++  /* ce->nr_words == ce->mw->nr_parts from make_candidate_from_simple_metaword()
++   */
++  assert(n < ce->nr_words);
+ 
+   p = anthy_get_nr_dic_ents(ce->elm[n].se, &ce->elm[n].str);
+ 
+@@ -160,7 +180,11 @@ enum_candidates(struct seg_ent *seg,
+ 
+       yomi.len = ce->elm[n].str.len;
+       yomi.str = &seg->str.str[from];
+-      cand = dup_candidate(ce);
++      if (!(cand = dup_candidate(ce))) {
++        anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++        return 0;
++      }
++      assert(n < cand->nr_words);
+       anthy_get_nth_dic_ent_str(cand->elm[n].se,
+ 				&yomi, i, &word);
+       cand->elm[n].nth = i;
+@@ -183,7 +207,11 @@ enum_candidates(struct seg_ent *seg,
+     xstr xs;
+     xs.len = ce->elm[n].str.len;
+     xs.str = &seg->str.str[from];
+-    cand = dup_candidate(ce);
++    if (!(cand = dup_candidate(ce))) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      return 0;
++    }
++    assert(n < cand->nr_words);
+     cand->elm[n].nth = -1;
+     cand->elm[n].id = -1;
+     anthy_xstrcat(&cand->str, &xs);
+@@ -286,19 +314,21 @@ make_cand_elem_from_word_list(struct seg_ent *se,
+       /* 長さの無いpartは無視する */
+       continue;
+     }
+-    if (i == PART_CORE) {
+-      ce->core_elm_index = i + index;
+-    }
+     core_xs.str = &se->str.str[from];
+     core_xs.len = part->len;
+     if (i == PART_DEPWORD) {
+       ce->dep_word_hash = anthy_dep_word_hash(&core_xs);
+     }
+-    ce->elm[i + index].se = anthy_get_seq_ent_from_xstr(&core_xs, is_reverse);
+-    ce->elm[i + index].str.str = core_xs.str;
+-    ce->elm[i + index].str.len = core_xs.len;
+-    ce->elm[i + index].wt = part->wt;
+-    ce->elm[i + index].ratio = RATIO_BASE * wl->len;
++    if ((i + index) < ce->nr_words) {
++      if (i == PART_CORE)
++        ce->core_elm_index = i + index;
++      assert(ce->elm);
++      ce->elm[i + index].se = anthy_get_seq_ent_from_xstr(&core_xs, is_reverse);
++      ce->elm[i + index].str.str = core_xs.str;
++      ce->elm[i + index].str.len = core_xs.len;
++      ce->elm[i + index].wt = part->wt;
++      ce->elm[i + index].ratio = RATIO_BASE * wl->len;
++    }
+     from += part->len;
+   }
+ }
+@@ -321,7 +351,10 @@ make_candidate_from_simple_metaword(struct seg_ent *se,
+   ce->nr_words = mw->nr_parts;
+   ce->str.str = NULL;
+   ce->str.len = 0;
+-  ce->elm = calloc(sizeof(struct cand_elm),ce->nr_words);
++  if (!(ce->elm = calloc(sizeof(struct cand_elm),ce->nr_words))) {
++    anthy_log(0, "Failed calloc in %s:%d\n", __FILE__, __LINE__);
++    ce->nr_words = 0;
++  }
+   ce->mw = mw;
+   ce->score = 0;
+ 
+@@ -352,12 +385,19 @@ make_candidate_from_combined_metaword(struct seg_ent *se,
+   struct cand_ent *ce;
+ 
+   /* 複数(1も含む)の単語で構成される文節に単語を割当てていく */
+-  ce = alloc_cand_ent();
++  if (!(ce = alloc_cand_ent())) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
+   ce->nr_words = mw->nr_parts;
+   ce->score = 0;
+   ce->str.str = NULL;
+   ce->str.len = 0;
+-  ce->elm = calloc(sizeof(struct cand_elm),ce->nr_words);
++  if (!(ce->elm = calloc(sizeof(struct cand_elm),ce->nr_words))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    free(ce);
++    return;
++  }
+   ce->mw = top_mw;
+ 
+   /* 接頭辞, 自立語部, 接尾辞, 付属語 */
+@@ -409,7 +449,10 @@ proc_splitter_info(struct seg_ent *se,
+     /* 連文節の葉 */
+     {
+       struct cand_ent *ce;
+-      ce = alloc_cand_ent();
++      if (!(ce = alloc_cand_ent())) {
++        anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++        break;
++      }
+       ce->str.str = anthy_xstr_dup_str(&mw->cand_hint);
+       ce->str.len = mw->cand_hint.len;
+       ce->flag = CEF_COMPOUND;
+@@ -425,7 +468,10 @@ proc_splitter_info(struct seg_ent *se,
+     /* metawordを持たない候補文字列が
+        直接に指定された */
+       struct cand_ent *ce;
+-      ce = alloc_cand_ent();
++      if (!(ce = alloc_cand_ent())) {
++        anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++        break;
++      }
+       ce->str.str = anthy_xstr_dup_str(&mw->cand_hint);
+       ce->str.len = mw->cand_hint.len;
+       ce->mw = top_mw;
+diff --git a/src-splitter/depgraph.c b/src-splitter/depgraph.c
+index 118791a..c9ab36c 100644
+--- a/src-splitter/depgraph.c
++++ b/src-splitter/depgraph.c
+@@ -18,7 +18,9 @@
+  *
+  * Copyright (C) 2000-2007 TABATA Yusuke
+  * Copyright (C) 2006 YOSHIDA Yuichi
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
++#include <assert.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -247,10 +249,14 @@ static void
+ read_node(struct dep_dic* ddic, struct dep_node* node, int* offset)
+ {
+   int i;
++  assert(offset);
+   node->nr_branch = anthy_dic_ntohl(*(int*)&ddic->file_ptr[*offset]);
+   *offset += sizeof(int);
+ 
+-  node->branch = malloc(sizeof(struct dep_branch) * node->nr_branch);
++  if (!(node->branch = malloc(sizeof(struct dep_branch) * node->nr_branch))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    node->nr_branch = 0;
++  }
+   for (i = 0; i < node->nr_branch; ++i) {
+     read_branch(ddic, &node->branch[i], offset);
+   }
+@@ -277,7 +283,10 @@ read_file(void)
+   offset += sizeof(int);
+ 
+   /* 各ノードを読み込む */
+-  ddic.nodes = malloc(sizeof(struct dep_node) * ddic.nrNodes);
++  if (!(ddic.nodes = malloc(sizeof(struct dep_node) * ddic.nrNodes))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    ddic.nrNodes = 0;
++  }
+   for (i = 0; i < ddic.nrNodes; ++i) {
+     read_node(&ddic, &ddic.nodes[i], &offset);
+   }
+@@ -313,6 +322,8 @@ anthy_quit_depword_tab(void)
+   for (i = 0; i < ddic.nrNodes; i++) {
+     struct dep_node* node = &ddic.nodes[i];
+     free(node->branch);
++    node->branch = NULL;
+   }
+   free(ddic.nodes);
++  ddic.nodes = NULL;
+ }
+diff --git a/src-splitter/lattice.c b/src-splitter/lattice.c
+index cc6c8f2..72cd599 100644
+--- a/src-splitter/lattice.c
++++ b/src-splitter/lattice.c
+@@ -9,7 +9,7 @@
+  * Copyright (C) 2006-2007 TABATA Yusuke
+  * Copyright (C) 2004-2006 YOSHIDA Yuichi
+  * Copyright (C) 2006 HANAOKA Toshiyuki
+- *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -37,17 +37,19 @@
+  * (2) グラフを後ろ(右)からたどって最適なパスを求める
+  *
+  */
++#include <assert.h>
++#include <math.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+-#include <math.h>
+ 
+ #include <anthy/alloc.h>
+-#include <anthy/xstr.h>
++#include <anthy/diclib.h>
++#include <anthy/feature_set.h>
++#include <anthy/logger.h>
+ #include <anthy/segclass.h>
+ #include <anthy/splitter.h>
+-#include <anthy/feature_set.h>
+-#include <anthy/diclib.h>
++#include <anthy/xstr.h>
+ #include "wordborder.h"
+ 
+ static float anthy_normal_length = 20.0; /* 文節の期待される長さ */
+@@ -82,6 +84,7 @@ struct lattice_info {
+   struct splitter_context *sc;
+   /* ノードのアロケータ */
+   allocator node_allocator;
++  int lattice_node_len;
+ };
+ 
+ /*
+@@ -210,6 +213,8 @@ get_transition_probability(struct lattice_node *node)
+   probability = calc_probability(node->seg_class, &features);
+   anthy_feature_list_free(&features);
+ 
++  if (!(node->mw))
++      return probability;
+   /* 文節の形に対する評価 */
+   probability *= get_form_bias(node->mw);
+   return probability;
+@@ -223,9 +228,15 @@ alloc_lattice_info(struct splitter_context *sc, int size)
+   info->sc = sc;
+   info->lattice_node_list = (struct node_list_head*)
+     malloc((size + 1) * sizeof(struct node_list_head));
+-  for (i = 0; i < size + 1; i++) {
+-    info->lattice_node_list[i].head = NULL;
+-    info->lattice_node_list[i].nr_nodes = 0;
++  if (!(info->lattice_node_list)) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    info->lattice_node_len = 0;
++  } else {
++    info->lattice_node_len = size + 1;
++    for (i = 0; i < size + 1; i++) {
++      info->lattice_node_list[i].head = NULL;
++      info->lattice_node_list[i].nr_nodes = 0;
++    }
+   }
+   info->node_allocator = anthy_create_allocator(sizeof(struct lattice_node),
+ 						NULL);
+@@ -235,6 +246,7 @@ alloc_lattice_info(struct splitter_context *sc, int size)
+ static void
+ calc_node_parameters(struct lattice_node *node)
+ {
++  assert(node);
+   /* 対応するmetawordが無い場合は文頭と判断する */
+   node->seg_class = node->mw ? node->mw->seg_class : SEG_HEAD;
+ 
+@@ -345,6 +357,8 @@ cmp_node(struct lattice_node *lhs, struct lattice_node *rhs)
+   }
+ 
+   /* 最後に遷移確率を見る */
++  assert(lhs);
++  assert(rhs);
+   if (lhs->adjusted_probability > rhs->adjusted_probability) {
+     return 1;
+   } else if (lhs->adjusted_probability < rhs->adjusted_probability) {
+@@ -368,11 +382,16 @@ push_node(struct lattice_info* info, struct lattice_node* new_node,
+     print_lattice_node(info, new_node);
+   }
+ 
++  assert(position >= 0);
++  if (position >= info->lattice_node_len) {
++    anthy_log(0, "info->lattice_node_list[%d] is not allocated\n", position);
++    return;
++  }
+   /* 先頭のnodeが無ければ無条件に追加 */
+   node = info->lattice_node_list[position].head;
+   if (!node) {
+     info->lattice_node_list[position].head = new_node;
+-    info->lattice_node_list[position].nr_nodes ++;
++    info->lattice_node_list[position].nr_nodes++;
+     return;
+   }
+ 
+@@ -406,7 +425,7 @@ push_node(struct lattice_info* info, struct lattice_node* new_node,
+ 
+   /* 最後のノードの後ろに追加 */
+   node->next = new_node;
+-  info->lattice_node_list[position].nr_nodes ++;
++  info->lattice_node_list[position].nr_nodes++;
+ }
+ 
+ /* 一番確率の低いノードを消去する*/
+@@ -418,6 +437,10 @@ remove_min_node(struct lattice_info *info, struct node_list_head *node_list)
+   struct lattice_node* min_node = node;
+   struct lattice_node* previous_min_node = NULL;
+ 
++  if (!min_node) {
++      anthy_log(0, "No min_node\n");
++      return;
++  }
+   /* 一番確率の低いノードを探す */
+   while (node) {
+     if (cmp_node(node, min_node) < 0) {
+@@ -435,7 +458,7 @@ remove_min_node(struct lattice_info *info, struct node_list_head *node_list)
+     node_list->head = min_node->next;
+   }
+   release_lattice_node(info, min_node);
+-  node_list->nr_nodes --;
++  node_list->nr_nodes--;
+ }
+ 
+ /* いわゆるビタビアルゴリズムを使用して経路を選ぶ */
+@@ -446,6 +469,10 @@ choose_path(struct lattice_info* info, int to)
+   struct lattice_node* node;
+   struct lattice_node* best_node = NULL;
+   int last = to;
++  if (last >= info->lattice_node_len) {
++    anthy_log(0, "info->lattice_node_list[%d] is not allocated\n", last);
++    return;
++  }
+   while (!info->lattice_node_list[last].head) {
+     /* 最後の文字まで遷移していなかったら後戻り */
+     --last;
+@@ -492,6 +519,11 @@ build_graph(struct lattice_info* info, int from, int to)
+    * indexからの遷移が入っているのではない
+    */
+ 
++  if (to >= info->lattice_node_len || from < 0) {
++    anthy_log(0, "info->lattice_node_list[%d] is not allocated: %d\n",
++    to, from);
++    return;
++  }
+   /* 全ての遷移を左から試す */
+   for (i = from; i < to; ++i) {
+     for (left_node = info->lattice_node_list[i].head; left_node;
+diff --git a/src-splitter/metaword.c b/src-splitter/metaword.c
+index ad98d36..4a5cc0c 100644
+--- a/src-splitter/metaword.c
++++ b/src-splitter/metaword.c
+@@ -10,6 +10,7 @@
+  * Copyright (C) 2000-2006 TABATA Yusuke
+  * Copyright (C) 2004-2006 YOSHIDA Yuichi
+  * Copyright (C) 2000-2003 UGAWA Tomoharu
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ #include <stdlib.h>
+ #include <stdio.h>
+@@ -462,10 +463,15 @@ try_combine_number(struct splitter_context *sc,
+     /* #NNは対象外 */
+     if (scos2 == SCOS_NONE) return;
+     /*
+-       左mwの種類によって、後ろにつくことができる右mwの種類が変わる
+-       例えば一〜九の後ろには万〜九万、億〜九億しかつくことができないが、
+-       十〜九十の後ろには、あわせて一〜九などもつくことができる
++     * 左mwの種類によって、後ろにつくことができる右mwの種類が変わる
++     * 例えば一〜九の後ろには万〜九万、億〜九億しかつくことができないが、
++     * 十〜九十の後ろには、あわせて一〜九などもつくことができる
++     * 漢数字、アラビア数字、全角半角切替え
++     * GCC 11.0.1 reports this statement may fall through because of no break
++     * in case statement with "-Wimplicit-fallthrough" option.
+      */
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+     switch (scos1) {
+     case SCOS_N1:
+       if (scos2 == SCOS_N1) return; /* 後ろに一〜九がついてはいけない */
+@@ -482,6 +488,7 @@ try_combine_number(struct splitter_context *sc,
+     default:
+       return;
+     }
++#pragma GCC diagnostic pop
+ 
+     if (recursive) {
+       combined_mw = anthy_do_cons_metaword(sc, MW_NUMBER, mw1, mw2);
+@@ -569,9 +576,6 @@ make_dummy_metaword(struct splitter_context *sc, int from,
+   n->from = from;
+   n->len = len;
+   n->score = 3 * score * len / orig_len;
+-  if (mw) {
+-    mw->nr_parts = 0;
+-  }
+   anthy_commit_meta_word(sc, n);
+ }
+ 
+@@ -695,8 +699,10 @@ make_ochaire_metaword_all(struct splitter_context *sc)
+       len = key->len;
+ 
+       make_ochaire_metaword(sc, i, len);
+-      /* 今回見つかった meta_word の次の文字から始める */
+-      i += len - 1;
++      /* 今回見つかった meta_word の次の文字から始める
++       * `i` should not be touched if `break` is called.
++       */
++      /* i += len - 1; */
+       break;
+     }
+   }
+diff --git a/src-splitter/segclass.c b/src-splitter/segclass.c
+index 3176a42..363efc4 100644
+--- a/src-splitter/segclass.c
++++ b/src-splitter/segclass.c
+@@ -1,3 +1,6 @@
++/*
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
++ */
+ #include <string.h>
+ 
+ #include <anthy/splitter.h>
+@@ -31,7 +34,6 @@ anthy_set_seg_class(struct word_list* wl)
+ 
+   head_pos = wl->head_pos;
+   dc = wl->part[PART_DEPWORD].dc;
+-  seg_class = SEG_HEAD;
+ 
+   if (wl->part[PART_CORE].len == 0) {
+     seg_class = SEG_BUNSETSU;
+diff --git a/src-splitter/splitter.c b/src-splitter/splitter.c
+index d35ea19..bccaab8 100644
+--- a/src-splitter/splitter.c
++++ b/src-splitter/splitter.c
+@@ -13,6 +13,7 @@
+  * Copyright (C) 2004 YOSHIDA Yuichi
+  * Copyright (C) 2000-2004 TABATA Yusuke
+  * Copyright (C) 2000-2001 UGAWA Tomoharu
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  * $Id: splitter.c,v 1.48 2002/11/18 11:39:18 yusuke Exp $
+  */
+@@ -93,6 +94,10 @@ alloc_char_ent(xstr *xs, struct splitter_context *sc)
+   sc->char_count = xs->len;
+   sc->ce = (struct char_ent*)
+     malloc(sizeof(struct char_ent)*(xs->len + 1));
++  if (!sc->ce) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
+   for (i = 0; i <= xs->len; i++) {
+     sc->ce[i].c = &xs->str[i];
+     sc->ce[i].seg_border = 0;
+@@ -303,6 +308,7 @@ anthy_init_splitter(void)
+   /* 付属語グラフの初期化 */
+   if (anthy_init_depword_tab()) {
+     anthy_log(0, "Failed to init dependent word table.\n");
++    anthy_quit_depword_tab();
+     return -1;
+   }
+   /**/
+diff --git a/src-util/agent.c b/src-util/agent.c
+index bb4c2a7..407e046 100644
+--- a/src-util/agent.c
++++ b/src-util/agent.c
+@@ -6,6 +6,7 @@
+  * Funded by IPA未踏ソフトウェア創造事業 2002 2/26
+  * Copyright (C) 2001-2002 UGAWA Tomoharu
+  * Copyright (C) 2002-2004 TABATA Yusuke,
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+  * *マルチコンテキストの扱いを決めかねている
+@@ -23,6 +24,7 @@
+ 
+ #include <anthy/anthy.h>
+ #include <anthy/input.h>
++#include <anthy/logger.h>
+ 
+ #include "rkconv.h"
+ 
+@@ -374,9 +376,6 @@ make_hl_command(char *buf)
+     cmd->arg[i] = encode_command_arg(p);
+   }
+   while ((p = strtok(NULL, " \t\r"))) {
+-    if (!p) {
+-      break;
+-    }
+     cmd->n_arg++;
+     cmd->arg = (char**) realloc(cmd->arg, sizeof(char*) * cmd->n_arg);
+     cmd->arg[cmd->n_arg - 1] = encode_command_arg(p);
+@@ -516,9 +515,12 @@ proc_connection(void)
+     FD_SET(daemon_sock, &rfds);
+   }
+   max_fd = MAX(conn->rfd, max_fd);
++  assert(conn->rfd >= 0);
+   FD_SET(conn->rfd, &rfds);
++  assert(conn->rfd >= 0);
+   if (conn->n_wbuf > 0) {
+     max_fd = MAX(conn->wfd, max_fd);
++    assert(conn->wfd >= 0);
+     FD_SET(conn->wfd, &wfds);
+   }
+ 
+@@ -569,7 +571,6 @@ AGAIN:
+   }
+ 
+   while (1) {
+-
+     char* p;
+     for (p = conn->rbuf; p < conn->rbuf + conn->n_rbuf; p++) {
+       if (*p == '\n') {
+@@ -583,11 +584,9 @@ AGAIN:
+ 	}
+       }
+     }
+-
+     if (proc_connection() == -1) {
+       return NULL;
+     }
+-
+   }
+ }
+ 
+@@ -750,6 +749,10 @@ new_input_context(int id)
+ 
+   ictxl =
+     (struct input_context_list*) malloc(sizeof (struct input_context_list));
++  if (!ictxl) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
+   ictxl->id = id;
+   ictxl->ictx = anthy_input_create_context(config);
+   ictxl->next = ictx_list;
+@@ -762,6 +765,8 @@ get_current_input_context(void)
+   if (ictx_list == NULL)
+     new_input_context(0);
+ 
++  if (!ictx_list)
++    return NULL;
+   return ictx_list->ictx;
+ }
+ 
+@@ -817,9 +822,16 @@ cmdh_release_input_context(struct command* cmd)
+ static void
+ cmdh_change_toggle(struct command *cmd)
+ {
+-  int toggle = cmd->arg[0][0];
++  int toggle;
+   int ret;
+ 
++  assert(cmd->arg);
++  if (!cmd->arg[0]) {
++    anthy_log(0, "cmdh_change_toggle should have one argument.\n");
++    send_error();
++    return;
++  }
++  toggle = cmd->arg[0][0];
+   ret = anthy_input_edit_toggle_config(config, toggle);
+ 
+   if (ret != 0) {
+@@ -833,6 +845,7 @@ cmdh_change_toggle(struct command *cmd)
+ static void
+ cmdh_map_clear(struct command *cmd)
+ {
++  assert(cmd->arg);
+   anthy_input_clear_rk_config(config, atoi(cmd->arg[0]));
+   anthy_input_change_config(config);
+   send_ok();
+@@ -841,6 +854,7 @@ cmdh_map_clear(struct command *cmd)
+ static void
+ cmdh_set_break_into_roman(struct command *cmd)
+ {
++  assert(cmd->arg);
+   anthy_input_break_into_roman_config(config, atoi(cmd->arg[0]));
+   anthy_input_change_config(config);
+   send_ok();
+@@ -849,6 +863,7 @@ cmdh_set_break_into_roman(struct command *cmd)
+ static void
+ cmdh_set_preedit_mode(struct command *cmd)
+ {
++  assert(cmd->arg);
+   anthy_input_preedit_mode_config(config, atoi(cmd->arg[0]));
+   anthy_input_change_config(config);
+   send_ok();
+@@ -857,10 +872,12 @@ cmdh_set_preedit_mode(struct command *cmd)
+ static void
+ cmdh_map_edit(struct command* cmd)
+ {
+-  /* MAP,from,to */
+-  int map_no = atoi(cmd->arg[0]);
++  int map_no;
+   int ret;
+ 
++  assert(cmd->arg);
++  /* MAP,from,to */
++  map_no = atoi(cmd->arg[0]);
+   ret = anthy_input_edit_rk_config(config, map_no,
+ 				   cmd->arg[1], cmd->arg[2], NULL);
+ 
+@@ -879,6 +896,7 @@ cmdh_map_select(struct anthy_input_context* ictx,
+   char* map_name;
+   int map_no;
+ 
++  assert(cmd->arg);
+   map_name = cmd->arg[0];
+   if (strcmp(map_name, "alphabet") == 0)
+     map_no = ANTHY_INPUT_MAP_ALPHABET;
+@@ -906,6 +924,7 @@ cmdh_get_candidate(struct anthy_input_context* ictx,
+   struct anthy_input_segment* seg;
+   int cand_no;
+ 
++  assert(cmd->arg);
+   cand_no = atoi(cmd->arg[0]);
+ 
+   seg = anthy_input_get_candidate(ictx, cand_no);
+@@ -924,6 +943,7 @@ cmdh_select_candidate(struct anthy_input_context* ictx,
+   int ret;
+   int cand_no;
+ 
++  assert(cmd->arg);
+   cand_no = atoi(cmd->arg[0]);
+   ret = anthy_input_select_candidate(ictx, cand_no);
+   if (ret < 0) {
+@@ -937,20 +957,25 @@ static void
+ cmd_shift_arrow(struct anthy_input_context* ictx,
+ 		struct command* cmd)
+ {
+-  int lr = atoi(cmd->arg[0]);
++  int lr;
++  assert(cmd->arg);
++  lr = atoi(cmd->arg[0]);
+   anthy_input_resize(ictx, lr);
+ }
+ 
+ static void
+ cmd_arrow(struct anthy_input_context* ictx, struct command* cmd)
+ {
+-  int lr = atoi(cmd->arg[0]);
++  int lr;
++  assert(cmd->arg);
++  lr = atoi(cmd->arg[0]);
+   anthy_input_move(ictx, lr);
+ }
+ 
+ static void
+ cmd_key(struct anthy_input_context* ictx, struct command* cmd)
+ {
++  assert(cmd->arg);
+   anthy_input_str(ictx, cmd->arg[0]);
+ }
+ 
+@@ -1137,7 +1162,10 @@ main(int argc, char **argv)
+     anthy_quit();
+   } else {
+     config = anthy_input_create_config();
+-    conn = (struct connection*) malloc(sizeof(struct connection));
++    if (!(conn = (struct connection*) malloc(sizeof(struct connection)))) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      return 1;
++    }
+     conn->rbuf = NULL;
+     conn->n_rbuf = 0;
+     conn->s_rbuf = 0;
+diff --git a/src-util/convdb.c b/src-util/convdb.c
+index 0d9dd1d..df240d6 100644
+--- a/src-util/convdb.c
++++ b/src-util/convdb.c
+@@ -2,6 +2,7 @@
+  * 変換エンジンの内部情報を使うため、意図的に
+  * layer violationを放置している。
+  *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ #include <stdio.h>
+ #include <string.h>
+@@ -77,8 +78,8 @@ do_find_conv_res(struct res_db *db, const char *src, const char *res)
+ 
+   for (cr = db->res_list.next; cr; cr = cr->next) {
+     if (((!cr->res_str && !res) ||
+-	 !strcmp(cr->res_str, res)) &&
+-	!strcmp(cr->src_str, src)) {
++        (cr->res_str && res && !strcmp(cr->res_str, res))) &&
++        (cr->src_str && src && !strcmp(cr->src_str, src))) {
+       return cr;
+     }
+   }
+@@ -235,6 +236,7 @@ read_db(struct res_db *db, const char *fn)
+   while (fgets(line, 1024, fp)) {
+     parse_line(db, line);
+   }
++  fclose(fp);
+ }
+ 
+ static void
+@@ -461,7 +463,7 @@ print_segment_info(int is_negative,
+   struct feature_list fl;
+   struct cand_ent *ce =  selected_candidate(seg);
+   int nr_indep = 0;
+-  const char *prefix = get_prefix(is_negative);
++  const char *prefix = NULL;
+ 
+   anthy_feature_list_init(&fl);
+   set_features(&fl, prev_seg, seg);
+diff --git a/src-util/dic-tool.c b/src-util/dic-tool.c
+index d7f8b2e..78d01bc 100644
+--- a/src-util/dic-tool.c
++++ b/src-util/dic-tool.c
+@@ -14,7 +14,7 @@
+  * Funded by IPA未踏ソフトウェア創造事業 2001 9/22
+  *
+  * Copyright (C) 2000-2007 TABATA Yusuke
+- * Copyright (C) 2020 Takao Fujiwara
++ * Copyright (C) 2020-2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -31,6 +31,7 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <assert.h>
+ #include <errno.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -40,6 +41,7 @@
+ #include <anthy/anthy.h>
+ #include <anthy/diclib.h>
+ #include <anthy/dicutil.h>
++#include <anthy/logger.h>
+ /**/
+ #include <anthy/textdict.h>
+ #include <anthy/xstr.h>
+@@ -121,16 +123,25 @@ static FILE *
+ open_typetab(void)
+ {
+   FILE *fp;
+-  char *fn;
++  char *fn, *tmp;
+   fp = fopen(TYPETAB, "r");
+   if (fp) {
+     return fp;
+   }
+-  fn = strdup(anthy_dic_util_get_anthydir());
+-  fn = realloc(fn, strlen(fn) + strlen(TYPETAB) + 4);
++  if (!(fn = strdup(anthy_dic_util_get_anthydir()))) {
++    anthy_log(0, "Could not find ANTHYDIR in conf file.\n");
++    return NULL;
++  }
++  if (!(tmp = realloc(fn, strlen(fn) + strlen(TYPETAB) + 4))) {
++    anthy_log(0, "Could not realloc TYPETAB.\n");
++    /* free(fn) is freed twice. */
++    return NULL;
++  }
++  fn = tmp;
+   strcat(fn, "/");
+   strcat(fn, TYPETAB);
+   fp = fopen(fn, "r");
++  free(fn);
+   return fp;
+ }
+ 
+@@ -142,11 +153,27 @@ open_usage_file(void)
+   fp = fopen(USAGE_TEXT, "r");
+   if (!fp) {
+     /* インストールされたものを使用 */
+-    char *fn;
+-    fn = strdup(anthy_dic_util_get_anthydir());
+-    fn = realloc(fn, strlen(fn) + strlen(USAGE_TEXT) + 10);
++    char *fn = NULL, *tmp;
++    if (!(fn = strdup(anthy_dic_util_get_anthydir()))) {
++      anthy_log(0, "Could not find ANTHYDIR in conf file.\n");
++      return NULL;
++    }
++    if (!(tmp = realloc(fn, strlen(fn) + strlen(USAGE_TEXT) + 10))) {
++      anthy_log(0, "Could not realloc USAGE_TEXT.\n");
++      /* CPPCHECK_WARNING and CLANG_WARNING are conflicted.
++       * CPPCHECK_WARNING reports: Common realloc mistake:
++       *     'fn' nulled but not freed upon failure
++       * also CLANG_WARNING reports: Potential leak of memory ponted to by 'fn'
++       * On the other hand,
++       * CLANG_WARNING reports: 'fn' is freed twice.
++       */
++      free(fn);
++      return NULL;
++    }
++    fn = tmp;
+     strcat(fn, "/" USAGE_TEXT);
+     fp = fopen(fn, "r");
++    free(fn);
+   }
+   return fp;
+ }
+@@ -263,7 +290,10 @@ read_typetab_var(struct var *head, FILE *fp, int table)
+     return -1;
+   }
+ 
+-  v = malloc(sizeof(struct var));
++  if (!(v = malloc(sizeof(struct var)))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return -1;
++  }
+   if (encoding == ANTHY_EUC_JP_ENCODING && table) {
+     /* UTF-8 */
+     v->var_name = anthy_conv_utf8_to_euc(var);
+@@ -281,6 +311,22 @@ read_typetab_var(struct var *head, FILE *fp, int table)
+   return 0;
+ }
+ 
++static void
++free_typetab_var (struct var *head)
++{
++  struct var *v = head;
++  while (v) {
++    struct var *prev;
++    free (v->var_name);
++    free (v->val);
++    prev = v;
++    v = v->next;
++    /* head is not allocated */
++    if (prev != head)
++      free (prev);
++  }
++}
++
+ static int
+ read_typetab_entry(FILE *fp)
+ {
+@@ -315,6 +361,7 @@ read_typetab(void)
+     exit(1);
+   }
+   while (!read_typetab_entry(fp));
++  fclose(fp);
+ }
+ 
+ static struct trans_tab *
+@@ -416,13 +463,16 @@ find_wt(void)
+   struct var v;
+   struct trans_tab *t;
+   v.next = 0;
++  memset(&v, 0, sizeof(struct var));
+   while(!read_typetab_var(&v, fp_in, 0));
+   for (t = trans_tab_list.next; t; t = t->next) {
+     if (var_list_subset_p(&t->var_list, &v) &&
+-	var_list_subset_p(&v, &t->var_list)) {
++        var_list_subset_p(&v, &t->var_list)) {
++      free_typetab_var(&v);
+       return t->type_name;
+     }
+   }
++  free_typetab_var(&v);
+   return NULL;
+ }
+ 
+@@ -493,17 +543,29 @@ load_text_dic (void)
+     return;
+   }
+   do {
+-    yomi = strdup (anthy_priv_dic_get_index (buf, LINE_SIZE));
++    if (!(yomi = strdup (anthy_priv_dic_get_index (buf, LINE_SIZE)))) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      continue;
++    }
+     if (*yomi == '#') {
+       free (yomi);
+       continue;
+     }
+     if (!dict_head) {
+-      d = dict_head = calloc (sizeof (struct dict_entry), 1);
++      if (!(d = dict_head = calloc (sizeof (struct dict_entry), 1))) {
++        anthy_log(0, "Failed calloc in %s:%d\n", __FILE__, __LINE__);
++        free(yomi);
++        break;
++      }
+     } else {
+-      d->next = calloc (sizeof (struct dict_entry), 1);
++      if (!(d->next = calloc (sizeof (struct dict_entry), 1))) {
++        anthy_log(0, "Failed calloc in %s:%d\n", __FILE__, __LINE__);
++        free(yomi);
++        break;
++      }
+       d = d->next;
+     }
++    assert(d);
+     d->yomi = yomi;
+     d->word = strdup (anthy_priv_dic_get_word (buf, LINE_SIZE));
+     d->wtype = strdup (anthy_priv_dic_get_wtype (buf, LINE_SIZE));
+diff --git a/src-util/egg.c b/src-util/egg.c
+index f9cdb0a..b1ca871 100644
+--- a/src-util/egg.c
++++ b/src-util/egg.c
+@@ -1,5 +1,6 @@
+ /*
+  * Copyright (C) 2002 The Free Software Initiative of Japan
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  * Author: NIIBE Yutaka
+  */
+ 
+@@ -7,11 +8,14 @@
+  * ANTHY Low Level Agent
+  */
+ 
++#include <limits.h>
++#include <stdint.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+ #include <anthy/anthy.h>
++#include <anthy/logger.h>
+ 
+ #include "config.h"
+ 
+@@ -126,6 +130,11 @@ begin_conversion (struct context *c, const char *input)
+   seg_num = get_number_of_segments (c);
+   if (seg_num >= c->sellen) {
+     c->sellen *= 2;
++    if (sizeof(int) * c->sellen >= INT_MAX || c->sellen < 0) {
++      anthy_log(0, "Exceed max allocation size: %lu >= %d\n",
++                (unsigned long)sizeof(int) * c->sellen, INT_MAX);
++      return -1;
++    }
+     c->selection = realloc (c->selection, c->sellen);
+     if (c->selection == NULL) { /* Fatal */
+       c->sellen = -1;
+diff --git a/src-util/input.c b/src-util/input.c
+index 5626115..030e3d8 100644
+--- a/src-util/input.c
++++ b/src-util/input.c
+@@ -5,6 +5,7 @@
+  *
+  * Funded by IPA未踏ソフトウェア創造事業 2002 1/23
+  * Copyright (C) 2001-2002 UGAWA Tomoharu
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmai.com>
+  *
+  * $Id: input.c,v 1.25 2002/11/16 03:35:21 yusuke Exp $
+  *
+@@ -21,6 +22,7 @@
+ 
+ #include <anthy/anthy.h>
+ #include <anthy/input.h>
++#include <anthy/logger.h>
+ 
+ #include "rkconv.h"
+ #include "rkhelper.h"
+@@ -332,6 +334,10 @@ cmdh_get_candidate(struct anthy_input_context* ictx, int cand_no)
+ 
+   seg = (struct anthy_input_segment*)
+     malloc(sizeof(struct anthy_input_segment));
++  if (!seg) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   len = anthy_get_segment(ictx->actx, cs->index, cand_no, NULL, 0);
+   seg->str = (char*) malloc(len + 1);
+   anthy_get_segment(ictx->actx, cs->index, cand_no, seg->str, len + 1);
+@@ -394,6 +400,10 @@ do_cmd_push_key(struct anthy_input_context* ictx, const char* str)
+ {
+   const char* p;
+ 
++  if (!str) {
++    anthy_log(0, "str should not be null in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
+   for (p = str; *p; p++) {
+     if (isspace((int)(unsigned char) *p) && *p != ' ')
+       continue;
+@@ -551,7 +561,10 @@ cmd_resize(struct anthy_input_context* ictx, int d)
+     if (as->next == NULL) {
+       struct a_segment* as2;
+ 
+-      as2 = (struct a_segment*) malloc(sizeof(struct a_segment));
++      if (!(as2 = (struct a_segment*) malloc(sizeof(struct a_segment)))) {
++        anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++        break;
++      }
+       as2->index = i;
+       as2->prev = as;
+       as->next = as2;
+@@ -773,6 +786,10 @@ anthy_input_create_context(struct anthy_input_config* cfg)
+ 
+   ictx =
+     (struct anthy_input_context*) malloc(sizeof(struct anthy_input_context));
++  if (!ictx) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      return NULL;
++  }
+   ictx->state = ANTHY_INPUT_ST_NONE;
+   ictx->rkctx = rk_context_create(cfg->break_into_roman);
+   for (i = 0; i < NR_RKMAP; i++)
+@@ -1180,6 +1197,8 @@ alloc_segment(int flag, int len, int noconv_len)
+   struct anthy_input_segment *seg;
+   seg = (struct anthy_input_segment*)
+     malloc(sizeof(struct anthy_input_segment));
++  if (!seg)
++    return NULL;
+   seg->flag = flag;
+   seg->cand_no = -1;
+   seg->nr_cand = -1;
+@@ -1207,6 +1226,11 @@ get_edit_mode_preedit(struct anthy_input_context* ictx,
+   if (ictx->n_hbuf > 0) {
+     *p = alloc_segment(ANTHY_INPUT_SF_EDITING, ictx->n_hbuf + 1,
+ 		       ictx->n_hbuf);
++    if (!(*p) || !((*p)->str)) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      ictx->n_hbuf = 0;
++      return;
++    }
+ 
+     memcpy((*p)->str, ictx->hbuf, ictx->n_hbuf);
+     (*p)->str[ictx->n_hbuf] = '\0';
+@@ -1216,7 +1240,11 @@ get_edit_mode_preedit(struct anthy_input_context* ictx,
+   if (ictx->cfg->preedit_mode) {
+     len = rk_partial_result(ictx->rkctx, NULL, 0);
+     if (len > 1) {
+-      *p = alloc_segment(ANTHY_INPUT_SF_PENDING, len, len - 1);
++      if (!(*p = alloc_segment(ANTHY_INPUT_SF_PENDING, len, len - 1))) {
++        anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++        pedit->cur_segment = NULL;
++        return;
++      }
+ 
+       rk_partial_result(ictx->rkctx, (*p)->str, len);
+       p = &(*p)->next;
+@@ -1224,7 +1252,11 @@ get_edit_mode_preedit(struct anthy_input_context* ictx,
+   } else {
+     len = rk_get_pending_str(ictx->rkctx, NULL, 0);
+     if (len > 1) {
+-      *p = alloc_segment(ANTHY_INPUT_SF_PENDING, len, len - 1);
++      if (!(*p = alloc_segment(ANTHY_INPUT_SF_PENDING, len, len - 1))) {
++        anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++        pedit->cur_segment = NULL;
++        return;
++      }
+ 
+       rk_get_pending_str(ictx->rkctx, (*p)->str, len);
+       p = &(*p)->next;
+@@ -1232,7 +1264,11 @@ get_edit_mode_preedit(struct anthy_input_context* ictx,
+   }
+ 
+   /* cursor */
+-  *p = alloc_segment(ANTHY_INPUT_SF_CURSOR, 0, 0);
++  if (!(*p = alloc_segment(ANTHY_INPUT_SF_CURSOR, 0, 0))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    pedit->cur_segment = NULL;
++    return;
++  }
+   pedit->cur_segment = *p;
+   p = &(*p)->next;
+ 
+@@ -1241,8 +1277,12 @@ get_edit_mode_preedit(struct anthy_input_context* ictx,
+     *p = alloc_segment(ANTHY_INPUT_SF_EDITING,
+ 		       ictx->n_hbuf_follow + 1,
+ 		       ictx->n_hbuf_follow);
+-    memcpy((*p)->str, ictx->hbuf_follow, ictx->n_hbuf_follow);
+-    (*p)->str[ictx->n_hbuf_follow] = '\0';
++    if (!(*p) || !((*p)->str)) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    } else {
++      memcpy((*p)->str, ictx->hbuf_follow, ictx->n_hbuf_follow);
++      (*p)->str[ictx->n_hbuf_follow] = '\0';
++    }
+   }
+ }
+ 
+@@ -1253,14 +1293,21 @@ anthy_input_get_preedit(struct anthy_input_context* ictx)
+ 
+   pedit = (struct anthy_input_preedit*)
+     malloc(sizeof(struct anthy_input_preedit));
++  if (!pedit) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+ 
+   pedit->state = ictx->state;
+ 
+   /* 未コミットの文字列 */
+   if (ictx->n_commit > 0) {
+-    pedit->commit = (char*) malloc(ictx->n_commit + 1);
+-    memcpy(pedit->commit, ictx->commit, ictx->n_commit);
+-    pedit->commit[ictx->n_commit] = '\0';
++    if (!(pedit->commit = (char*) malloc(ictx->n_commit + 1))) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    } else {
++      memcpy(pedit->commit, ictx->commit, ictx->n_commit);
++      pedit->commit[ictx->n_commit] = '\0';
++    }
+     ictx->n_commit = 0;
+   } else {
+     pedit->commit = NULL;
+@@ -1268,9 +1315,12 @@ anthy_input_get_preedit(struct anthy_input_context* ictx)
+ 
+   /* カットバッファの文字列 */
+   if(ictx->n_cut > 0) {
+-    pedit->cut_buf = (char*) malloc(ictx->n_cut + 1);
+-    memcpy(pedit->cut_buf, ictx->cut, ictx->n_cut);
+-    pedit->cut_buf[ictx->n_cut] = '\0';
++    if (!(pedit->cut_buf = (char*) malloc(ictx->n_cut + 1))) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    } else {
++      memcpy(pedit->cut_buf, ictx->cut, ictx->n_cut);
++      pedit->cut_buf[ictx->n_cut] = '\0';
++    }
+     ictx->n_cut = 0;
+   } else {
+     pedit->cut_buf = NULL;
+@@ -1299,7 +1349,10 @@ anthy_input_get_preedit(struct anthy_input_context* ictx)
+ 				       NTH_UNCONVERTED_CANDIDATE,
+ 				       NULL, 0);
+ 	len = anthy_get_segment(ictx->actx, as->index, as->cand, NULL, 0);
+-	*p = alloc_segment(ANTHY_INPUT_SF_NONE, len + 1, noconv_len);
++	if (!(*p = alloc_segment(ANTHY_INPUT_SF_NONE, len + 1, noconv_len))) {
++          anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++          return pedit;
++	}
+ 
+ 	anthy_get_segment(ictx->actx, as->index, as->cand, (*p)->str, len + 1);
+ 	(*p)->cand_no = as->cand;
+@@ -1324,6 +1377,10 @@ anthy_input_get_preedit(struct anthy_input_context* ictx)
+ 
+ 	      p = &(*p)->next;
+ 	      *p = alloc_segment(ANTHY_INPUT_SF_FOLLOWING, len + 1, len);
++	      if (!(*p) || !((*p)->str)) {
++                anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++                break;
++	      }
+ 	      for (as1 = as->next, s = (*p)->str; as1; as1 = as1->next) {
+ 		anthy_get_segment(ictx->actx, as1->index,
+ 				  NTH_UNCONVERTED_CANDIDATE,
+@@ -1490,6 +1547,10 @@ anthy_input_create_config(void)
+   struct anthy_input_config* cfg;
+ 
+   cfg = (struct anthy_input_config*) malloc(sizeof(struct anthy_input_config));
++  if (!cfg) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+ 
+   cfg->rk_option = anthy_input_create_rk_option();
+   cfg->break_into_roman = 0;
+diff --git a/src-util/rkconv.c b/src-util/rkconv.c
+index acbb1ef..435dc6b 100644
+--- a/src-util/rkconv.c
++++ b/src-util/rkconv.c
+@@ -7,12 +7,16 @@
+  * $Id: rkconv.c,v 1.16 2002/11/16 03:35:21 yusuke Exp $
+  *
+  * Copyright (C) 2001-2002 UGAWA Tomoharu
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  */
++#include <assert.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
++#include <anthy/logger.h>
++
+ #include "rkconv.h"
+ 
+ #define MAX_CONV_CHARS  1024
+@@ -193,7 +197,7 @@ rk_slr_closure_create(struct rk_rule_set* rs,
+     struct rk_rule* r;
+     int c;
+     r = rs->rules + i;
+-    if (pflen > 0 && strncmp(prefix, r->lhs, pflen) != 0)
++    if (pflen > 0 && strncmp(prefix ? prefix : "", r->lhs, pflen) != 0)
+       continue;
+ 
+     c = r->lhs[pflen] & 0x7f;
+@@ -341,9 +345,13 @@ rk_convert_iterative(struct rk_conv_context* cc, int c,
+ static void
+ brk_roman_init(struct rk_conv_context *rkctx)
+ {
+-  rkctx->brk_roman= (struct break_roman *)malloc(sizeof(struct break_roman));
+-  rkctx->brk_roman->pending=NULL;
+-  rkctx->brk_roman->pending_size=0;
++  rkctx->brk_roman = (struct break_roman *)malloc(sizeof(struct break_roman));
++  if (!rkctx->brk_roman) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
++  rkctx->brk_roman->pending = NULL;
++  rkctx->brk_roman->pending_size = 0;
+ }
+ 
+ static void
+@@ -354,10 +362,10 @@ brk_roman_free(struct rk_conv_context *rkctx)
+   if(!br)
+     return;
+ 
+-  if (br->pending) {
+-    free(br->pending);
+-  }
++  free(br->pending);
++  br->pending = NULL;
+   free(br);
++  rkctx->brk_roman = NULL;
+ }
+ 
+ 
+@@ -374,8 +382,7 @@ brk_roman_save_pending(struct rk_conv_context *rkctx)
+ 
+   if(br->pending_size < len){
+     br->pending_size=len;
+-    if(br->pending)
+-      free(br->pending);
++    free(br->pending);
+     br->pending=(char *)malloc(len);
+   }
+ 
+@@ -386,7 +393,12 @@ brk_roman_save_pending(struct rk_conv_context *rkctx)
+ static void
+ brk_roman_set_decided_len(struct rk_conv_context *rkctx,int len)
+ {
+-  struct break_roman *br=rkctx->brk_roman;
++  struct break_roman *br;
++  if (!rkctx) {
++    anthy_log(0, "Failed rkctx != NULL in %s:%d\n", __FILE__, __LINE__);
++    return;
++  }
++  br=rkctx->brk_roman;
+ 
+   if(!br)
+     return;
+@@ -447,6 +459,10 @@ int
+ rk_push_key(struct rk_conv_context* cc, int c)
+ {
+   int increased_length;
++  if (!cc) {
++    anthy_log(0, "Failed cc != NULL in %s:%d\n", __FILE__, __LINE__);
++    return -1;
++  }
+   c &= 0x7f;
+   if (cc->cur_state == NULL)
+     return -1;
+@@ -527,6 +543,10 @@ rk_select_map(struct rk_conv_context* cc, struct rk_map* map)
+ {
+   struct rk_map* old_map;
+ 
++  if (!cc) {
++    anthy_log(0, "Failed cc != NULL in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   cc->old_map_no = cc->map_no;
+   old_map = cc->map;
+   if (old_map) {
+@@ -557,6 +577,10 @@ rk_get_pending_str(struct rk_conv_context* cc, char* buf, int size)
+ 
+   if (size <= 0)
+     return strlen(p) + 1;
++  if (!buf) {
++    anthy_log(0, "Failed buf != NULL in %s:%d\n", __FILE__, __LINE__);
++    return 0;
++  }
+ 
+   q = buf;
+   end = buf + size - 1;
+@@ -588,6 +612,7 @@ rk_register_map(struct rk_conv_context* cc, int mapn, struct rk_map* map)
+ void
+ rk_select_registered_map(struct rk_conv_context* cc, int mapn)
+ {
++  assert(cc);
+   if (0 <= mapn && mapn < 0 + MAX_MAP_PALETTE) {
+     rk_select_map(cc, cc->map_palette[mapn]);
+     cc->map_no = mapn;
+@@ -663,7 +688,6 @@ rk_sort_rule(const struct rk_rule *src)
+  ERROR:
+   rules[i].lhs = NULL;
+   rk_rules_free(rules);
+-  free(rules);
+   return NULL;
+ }
+ 
+diff --git a/src-worddic/dic_util.c b/src-worddic/dic_util.c
+index 3963e8f..9eae864 100644
+--- a/src-worddic/dic_util.c
++++ b/src-worddic/dic_util.c
+@@ -17,6 +17,7 @@
+  * Funded by IPA未踏ソフトウェア創造事業 2001 10/24
+  *
+  * Copyright (C) 2001-2007 TABATA Yusuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  */
+ /*
+@@ -34,6 +35,7 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <assert.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+@@ -41,9 +43,10 @@
+ #include <anthy/anthy.h>
+ #include <anthy/conf.h>
+ #include <anthy/dic.h>
+-#include <anthy/texttrie.h>
+-#include <anthy/textdict.h>
+ #include <anthy/dicutil.h>
++#include <anthy/logger.h>
++#include <anthy/textdict.h>
++#include <anthy/texttrie.h>
+ 
+ #include "dic_main.h"
+ #include "dic_personality.h"
+@@ -291,6 +294,10 @@ anthy_priv_dic_get_index(char *buf, int len)
+   } else {
+     src_buf = strdup(src_buf);
+   }
++  if (!src_buf) {
++    anthy_log(0, "Failed src_buf != NULL in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   /* 最初の空白か\0までをコピーする */
+   for (i = 0; src_buf[i] && src_buf[i] != ' '; i++) {
+     if (i >= len - 1) {
+@@ -356,6 +363,7 @@ anthy_priv_dic_get_word(char *buf, int len)
+   }
+   /* 品詞の後ろにある単語を取り出す */
+   s = strchr(v, ' ');
++  assert(s);
+   s++;
+   if (!word_iterator.in_tt && dic_util_encoding == ANTHY_EUC_JP_ENCODING) {
+     s = anthy_conv_utf8_to_euc(s);
+@@ -441,6 +449,10 @@ find_same_word(char *idx_buf, const char *yomi,
+ 	       const char *word, const char *wt_name, int yomi_len)
+ {
+   int found = 0;
++  if (!idx_buf) {
++    anthy_log(0, "Failed idx_buf != NULL in %s:%d\n", __FILE__, __LINE__);
++    return found;
++  }
+   sprintf(idx_buf, "%s%s ",
+ 	  encoding_prefix(dic_util_encoding),
+ 	  yomi);
+@@ -456,6 +468,13 @@ find_same_word(char *idx_buf, const char *yomi,
+       break;
+     }
+     /* texttrieにアクセスして、見出語以外も一致しているかをチェック */
++    /* 単語を読み出して登録
++     * GCC 11.0.1 reports double-'free' of 'v'
++     * in case statement with "-Wanalyzer-double-free" option
++     * but 'v' is always allocated newly.
++     */
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wanalyzer-double-free"
+     v = anthy_trie_find(anthy_private_tt_dic, idx_buf);
+     if (v) {
+       found = dup_word_check(v, word, wt_name);
+@@ -464,6 +483,7 @@ find_same_word(char *idx_buf, const char *yomi,
+ 	break;
+       }
+     }
++#pragma GCC diagnostic pop
+   } while (anthy_trie_find_next_key(anthy_private_tt_dic,
+ 				    idx_buf, yomi_len + 12));
+ 
+@@ -565,9 +585,7 @@ do_search(FILE *fp, const char *word)
+       continue;
+     }
+     if (!strncasecmp(buf, word, len)) {
+-      if (res) {
+-	free(res);
+-      }
++      free(res);
+       res = strdup(buf);
+     }
+   }
+diff --git a/src-worddic/ext_ent.c b/src-worddic/ext_ent.c
+index 45ecdd3..8701d43 100644
+--- a/src-worddic/ext_ent.c
++++ b/src-worddic/ext_ent.c
+@@ -5,6 +5,7 @@
+  *
+  * Copyright (C) 2001-2005 TABATA Yusuke
+  * Copyright (C) 2004-2005 YOSHIDA Yuichi
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  */
+ /*
+@@ -22,11 +23,13 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <assert.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <stdio.h>
+ #include <anthy/anthy.h> /* for ANTHY_*_ENCODING */
+ #include <anthy/conf.h>
++#include <anthy/logger.h>
+ #include <anthy/xstr.h>
+ #include <anthy/xchar.h>
+ #include "dic_main.h"
+@@ -201,6 +204,8 @@ compose_num_component(xstr *xs, long long num)
+ {
+   int n[4],i;
+   int a[4] = { 0 , KJ_10, KJ_100, KJ_1000};
++  xstr *tmp;
++   assert(xs);
+   for (i = 0; i < 4; i++) {
+     n[i] = num-(num/10)*10;
+     num /= 10;
+@@ -209,14 +214,17 @@ compose_num_component(xstr *xs, long long num)
+   for (i = 3; i > 0; i--) {
+     if (n[i] > 0) {
+       if (n[i] > 1) {
+-	anthy_xstrappend(xs, get_kj_num(n[i]));
++        tmp = anthy_xstrappend(xs, get_kj_num(n[i]));
++	assert(tmp == xs);
+       }
+-      anthy_xstrappend(xs, a[i]);
++      tmp = anthy_xstrappend(xs, a[i]);
++      assert(tmp == xs);
+     }
+   }
+   /* 1の位 */
+   if (n[0]) {
+-    anthy_xstrappend(xs, get_kj_num(n[0]));
++    tmp = anthy_xstrappend(xs, get_kj_num(n[0]));
++    assert(tmp == xs);
+   }
+ }
+ 
+@@ -339,16 +347,20 @@ gen_separated_num(long long num, xstr *dest, int full)
+ 
+   /* 桁数を数える */
+   for (tmp = num; tmp != 0; tmp /= 10) {
+-    width ++;
++    width++;
+   }
+   /* 点の数 */
+   dot_count = (width - 1) / 3;
+   /* 格納するのに必要な文字列を用意する */
+   dest->len = dot_count + width;
+-  dest->str = malloc(sizeof(xchar)*dest->len);
++  if (!(dest->str = malloc(sizeof(xchar)*dest->len))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    dest->len = 0;
++    return -1;
++  }
+ 
+   /* 右の桁から順に決めていく */
+-  for (i = 0, pos = dest->len - 1; i < width; i++, pos --) {
++  for (i = 0, (pos = dest->len - 1) && (pos >= 0); i < width; i++, pos--) {
+     int n = num % 10;
+     /* カンマを追加 */
+     if (i > 0 && (i % 3) == 0) {
+@@ -357,7 +369,11 @@ gen_separated_num(long long num, xstr *dest, int full)
+       } else {
+ 	dest->str[pos] = ',';
+       }
+-      pos --;
++      pos--;
++    }
++    if (pos < 0) {
++      anthy_log(0, "pos %d < 0 in %s:%d\n", pos, __FILE__, __LINE__);
++      break;
+     }
+     if (full) {
+       /* 全角数字 */
+@@ -396,7 +412,12 @@ anthy_get_nth_dic_ent_str_of_ext_ent(seq_ent_t se, xstr *xs,
+   if (anthy_get_xstr_type(xs) & (XCT_NUM|XCT_WIDENUM)) {
+     long long num = anthy_xstrtoll(xs);
+     const int base_ents = get_nr_num_ents(num); /* ３桁郵便番号への対応 */
+-    /* 漢数字、アラビア数字、全角半角切替え */
++    /* 漢数字、アラビア数字、全角半角切替え
++     * GCC 11.0.1 reports this statement may fall through because of no break
++     * in case statement with "-Wimplicit-fallthrough" option.
++     */
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+     switch(nth) {
+     case 1:
+       /* 全角半角を入れ換えたもの */
+@@ -431,6 +452,7 @@ anthy_get_nth_dic_ent_str_of_ext_ent(seq_ent_t se, xstr *xs,
+       }
+       break;
+     }
++#pragma GCC diagnostic pop
+     return -1;
+   }
+   return 0;
+diff --git a/src-worddic/feature_set.c b/src-worddic/feature_set.c
+index 0af964e..36576e4 100644
+--- a/src-worddic/feature_set.c
++++ b/src-worddic/feature_set.c
+@@ -3,6 +3,7 @@
+  * 素性の番号と意味を隠蔽して管理する
+  *
+  * Copyright (C) 2006-2007 TABATA Yusuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  */
+ /*
+@@ -20,6 +21,7 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <assert.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -232,6 +234,11 @@ anthy_find_feature_freq(const void *image,
+ 
+   /* 配列にコピーする */
+   nr = anthy_feature_list_nr(fl);
++  /* From anthy_feature_list_add(), nr should <= NR_EM_FEATURES.
++   * And i should be < NR_EM_FEATURES for anthy_feature_list_nth()
++   * which accesses fl->u.index[i].
++   */
++  assert(nr <= NR_EM_FEATURES);
+   for (i = 0; i < NR_EM_FEATURES + 2; i++) {
+     if (i < nr) {
+       f[i] = anthy_feature_list_nth(fl, i);
+diff --git a/src-worddic/matrix.c b/src-worddic/matrix.c
+index d4627fe..ba65c66 100644
+--- a/src-worddic/matrix.c
++++ b/src-worddic/matrix.c
+@@ -44,6 +44,7 @@
+  *   image[2+image[0] ~ 2+image[0]+image[1]-1] : hashed row array
+  *
+  * Copyright (C) 2005 TABATA Yusuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  */
+ /*
+@@ -61,12 +62,14 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <assert.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ 
+ #include <anthy/diclib.h>
+ /* public APIs */
+ #include <anthy/matrix.h>
++#include <anthy/logger.h>
+ 
+ /* maximum length allowed for hash chain */
+ #define MAX_FAILURE 50
+@@ -114,6 +117,8 @@ sparse_array_new(void)
+   a->head.next = NULL;
+   a->head.orig_next = NULL;
+   a->head.index = -1;
++  a->head.ptr = NULL;
++  a->head.value = 0;
+   /**/
+   a->array_len = 0;
+   a->array = NULL;
+@@ -182,7 +187,10 @@ sparse_array_try_make_array(struct sparse_array *s)
+   struct list_elm *e;
+   /* initialize */
+   free(s->array);
+-  s->array = malloc(sizeof(struct array_elm) * s->array_len);
++  if (!(s->array = malloc(sizeof(struct array_elm) * s->array_len))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return 1;
++  }
+   for (i = 0; i < s->array_len; i++) {
+     s->array[i].index = -1;
+   }
+@@ -193,6 +201,7 @@ sparse_array_try_make_array(struct sparse_array *s)
+     int n = 0;
+     do {
+       int h = hash(e->index, s->array_len, n);
++      assert((h >= 0) && (h < s->array_len));
+       if (s->array[h].index == -1) {
+ 	/* find unused element in this array */
+ 	ok = 1;
+@@ -201,7 +210,7 @@ sparse_array_try_make_array(struct sparse_array *s)
+ 	s->array[h].ptr = e->ptr;
+       } else {
+ 	/* collision */
+-	n ++;
++	n++;
+ 	if (n > MAX_FAILURE) {
+ 	  /* too much collision */
+ 	  return 1;
+@@ -246,7 +255,7 @@ sparse_array_get(struct sparse_array *s, int index, struct array_elm *arg)
+       }
+     }
+   } else {
+-    struct list_elm *e = e = s->head.next;
++    struct list_elm *e = s->head.next;
+     while (e) {
+       if (e->index == index) {
+ 	arg->value = e->value;
+@@ -287,6 +296,32 @@ sparse_array_get_ptr(struct sparse_array *s, int index)
+   return NULL;
+ }
+ 
++static void
++sparse_array_free (struct sparse_array **array)
++{
++  struct list_elm *e;
++
++  assert(array);
++  if (!(*array))
++    return;
++  free ((*array)->array);
++  (*array)->array = NULL;
++  for (e = (*array)->head.next; e;) {
++    struct list_elm *next = e->next;
++    struct sparse_array *sub = e->ptr;
++    sparse_array_free (&sub);
++    e->ptr = NULL;
++    e->next = NULL;
++    free (e);
++    e = next;
++  }
++  (*array)->head.next = NULL;
++  if (!(*array))
++    return;
++  free (*array);
++  *array = NULL;
++}
++
+ /**/
+ struct sparse_matrix {
+   /**/
+@@ -320,7 +355,7 @@ find_row(struct sparse_matrix *m, int row, int create)
+   /* allocate a new row */
+   a = sparse_array_new();
+   sparse_array_set(m->row_array, row, 0, a);
+-  m->nr_rows ++;
++  m->nr_rows++;
+   return a;
+ }
+ 
+@@ -339,11 +374,10 @@ int
+ anthy_sparse_matrix_get_int(struct sparse_matrix *m, int row, int column)
+ {
+   struct sparse_array *a;
+-  struct list_elm *e;
++  struct list_elm *e = NULL;
+   a = find_row(m, row, 1);
+-  if (!a) {
++  if (!a)
+     return 0;
+-  }
+   for (e = &a->head; e; e = e->next) {
+     if (e->index == column) {
+       return e->value;
+@@ -378,6 +412,14 @@ anthy_sparse_matrix_make_matrix(struct sparse_matrix *m)
+   m->array_length = offset;
+ }
+ 
++/* API */
++void
++anthy_sparse_matrix_free (struct sparse_matrix *m)
++{
++  sparse_array_free (&m->row_array);
++  free (m);
++}
++
+ /* API */
+ struct matrix_image *
+ anthy_matrix_image_new(struct sparse_matrix *s)
+@@ -386,15 +428,24 @@ anthy_matrix_image_new(struct sparse_matrix *s)
+   int i;
+   int offset;
+   /**/
+-  mi = malloc(sizeof(struct matrix_image));
++  assert(s && s->row_array);
++  if (!(mi = malloc(sizeof(struct matrix_image)))) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      return NULL;
++  }
+   mi->size = 2 + s->row_array->array_len * 2 + s->array_length * 2;
+-  mi->image = malloc(sizeof(int) * mi->size);
++  if (!(mi->image = malloc(sizeof(int) * mi->size))) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      free(mi);
++      return NULL;
++  }
+   mi->image[0] = s->row_array->array_len;
+   mi->image[1] = s->array_length;
+   /* row index */
+   offset = 2;
+   for (i = 0; i < s->row_array->array_len; i++) {
+     struct array_elm *ae;
++    assert(s->row_array->array);
+     ae = &s->row_array->array[i];
+     mi->image[offset + i*2] = ae->index;
+     mi->image[offset + i*2 + 1] = ae->value;
+@@ -405,6 +456,7 @@ anthy_matrix_image_new(struct sparse_matrix *s)
+     struct array_elm *ae;
+     struct sparse_array *sa;
+     int j;
++    assert(s->row_array->array);
+     ae = &s->row_array->array[i];
+     if (ae->index == -1) {
+       continue;
+@@ -414,7 +466,10 @@ anthy_matrix_image_new(struct sparse_matrix *s)
+       continue;
+     }
+     for (j = 0; j < sa->array_len; j++) {
+-      struct array_elm *cell = &sa->array[j];
++      struct array_elm *cell;
++      assert(sa->array);
++      cell = &sa->array[j];
++      assert(cell);
+       mi->image[offset] = cell->index;
+       if (cell->index == -1) {
+ 	mi->image[offset + 1] = -1;
+diff --git a/src-worddic/priv_dic.c b/src-worddic/priv_dic.c
+index ce0693d..3c3c268 100644
+--- a/src-worddic/priv_dic.c
++++ b/src-worddic/priv_dic.c
+@@ -5,6 +5,7 @@
+  * 未知語を自動的に学習して管理するAPIも持つ。
+  *
+  * Copyright (C) 2000-2007 TABATA Yusuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -21,6 +22,7 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <errno.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <dirent.h>
+@@ -44,6 +46,7 @@
+ #include <anthy/word_dic.h>
+ #include "dic_main.h"
+ #include "dic_ent.h"
++#include <src-diclib/diclib_inner.h>
+ 
+ /* 個人辞書 */
+ struct text_trie *anthy_private_tt_dic;
+@@ -82,17 +85,26 @@ anthy_get_user_dir(int is_old)
+ 
+   if (is_old) {
+     hd = anthy_conf_get_str("HOME");
+-    old_anthy_private_dir = malloc(strlen(hd) + 10);
++    if (!(old_anthy_private_dir = malloc(strlen(hd) + 10))) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      return NULL;
++    }
+     sprintf(old_anthy_private_dir, "%s/.anthy", hd);
+     return old_anthy_private_dir;
+   }
+   xdg = anthy_conf_get_str("XDG_CONFIG_HOME");
+   if (xdg && xdg[0]) {
+-    anthy_private_dir = malloc(strlen(xdg) + 10);
++    if (!(anthy_private_dir = malloc(strlen(xdg) + 10))) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      return NULL;
++    }
+     sprintf(anthy_private_dir, "%s/anthy", xdg);
+   } else {
+     hd = anthy_conf_get_str("HOME");
+-    anthy_private_dir = malloc(strlen(hd) + 15);
++    if (!(anthy_private_dir = malloc(strlen(hd) + 15))) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      return NULL;
++    }
+     sprintf(anthy_private_dir, "%s/.config/anthy", hd);
+   }
+   return anthy_private_dir;
+@@ -102,20 +114,18 @@ anthy_get_user_dir(int is_old)
+ void
+ anthy_check_user_dir(void)
+ {
+-  struct stat st;
+   const char *dn = anthy_get_user_dir(0);
+-  if (stat(dn, &st) || !S_ISDIR(st.st_mode)) {
++  /* Use anthy_file_test() and anthy_mkdir_with_parents() since
++   * chmod() after stat() causes a a time-of-check, * time-of-use race
++   * condition (TOCTOU).
++   */
++  if (!anthy_file_test (dn, ANTHY_FILE_TEST_EXISTS | ANTHY_FILE_TEST_IS_DIR)) {
+     int r;
+-    /*fprintf(stderr, "Anthy: Failed to open anthy directory(%s).\n", dn);*/
++    errno = 0;
+     r = anthy_mkdir_with_parents(dn, S_IRWXU);
+     if (r == -1){
+-      anthy_log(0, "Failed to create profile directory\n");
+-      return ;
+-    }
+-    /*fprintf(stderr, "Anthy: Created\n");*/
+-    r = chmod(dn, S_IRUSR | S_IWUSR | S_IXUSR);
+-    if (r == -1) {
+-      anthy_log(0, "But failed to change permission.\n");
++      anthy_log(0, "Failed to create profile directory: %s\n", strerror(errno));
++      return;
+     }
+   }
+ }
+@@ -238,12 +248,15 @@ copy_words_from_tt(struct seq_ent *seq, xstr *xs,
+     tt_dic = old_anthy_private_tt_dic;
+   else
+     tt_dic = anthy_private_tt_dic;
+-  if (!tt_dic) {
+-    return ;
+-  }
++  if (!tt_dic)
++    return;
+   key = anthy_xstr_to_cstr(xs, encoding);
+   key_len = strlen(key);
+-  key_buf = malloc(key_len + 12);
++  if (!(key_buf = malloc(key_len + 12))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    free(key);
++    return;
++  }
+   /* 辞書中には各単語が「見出し XXXX」(XXXXはランダムな文字列)を
+    * キーとして保存されているので列挙する
+    */
+@@ -255,12 +268,19 @@ copy_words_from_tt(struct seq_ent *seq, xstr *xs,
+       /* 「見出し 」で始まっていないので対象外 */
+       break;
+     }
+-    /* 単語を読み出して登録 */
++    /* 単語を読み出して登録
++     * GCC 11.0.1 reports double-'free' of 'v'
++     * in case statement with "-Wanalyzer-double-free" option
++     * but 'v' is always allocated newly.
++     */
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wanalyzer-double-free"
+     v = anthy_trie_find(tt_dic, key_buf);
+     if (v) {
+       add_to_seq_ent(v, encoding, seq);
+     }
+     free(v);
++#pragma GCC diagnostic pop
+     /**/
+   } while (anthy_trie_find_next_key(tt_dic,
+ 				    key_buf, key_len + 8));
+diff --git a/src-worddic/record.c b/src-worddic/record.c
+index 5d71f88..edd487f 100644
+--- a/src-worddic/record.c
++++ b/src-worddic/record.c
+@@ -30,18 +30,20 @@
+  * Copyright (C) 2000-2006 TABATA Yusuke
+  * Copyright (C) 2000-2003 UGAWA Tomoharu
+  * Copyright (C) 2001-2002 TAKAI Kosuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+  * パーソナリティ""は匿名パーソナリティであり，
+  * ファイルへの読み書きは行わない．
+  */
+-#include <sys/types.h>
+-#include <sys/stat.h>
++#include <assert.h>
+ #include <errno.h>
+-#include <unistd.h>
+-#include <string.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <string.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <unistd.h>
+ 
+ #include "config.h"
+ #include <anthy/anthy.h>
+@@ -580,6 +582,7 @@ trie_remove(struct trie_root *root, xstr *key,
+       r = s;
+       s = trie_key_nth_bit(key, r->bit) ? r->r : r->l;
+     }
++    assert(pp);
+     *pp = (p->r == q) ? p->l : p->r;
+     p->l = q->l;
+     p->r = q->r;
+@@ -1182,13 +1185,20 @@ read_journal_record(struct record_stat* rs)
+     fclose(fp);
+     return ;
+   }
++  errno = 0;
+   if (st.st_size < rs->last_update) {
+ 
+     /* ファイルサイズが小さくなっているので、
+      * 最初から読み込む */
+-    fseek(fp, 0, SEEK_SET);
++    if (fseek(fp, 0, SEEK_SET)) {
++      anthy_log(0, "Failed fseek in %s:%d: %s\n",
++                __FILE__, __LINE__, anthy_strerror(errno));
++    }
+   } else {
+-    fseek(fp, rs->last_update, SEEK_SET);
++    if (fseek(fp, rs->last_update, SEEK_SET)) {
++      anthy_log(0, "Failed fseek in %s:%d: %s\n",
++                __FILE__, __LINE__, anthy_strerror(errno));
++    }
+   }
+   rs->journal_timestamp = st.st_mtime;
+   while (!feof(fp)) {
+@@ -2026,11 +2036,19 @@ setup_filenames(const char *id, struct record_stat *rst)
+   /* 基本ファイル */
+   rst->base_fn = (char*) malloc(base_len +
+ 				strlen("/last-record1_"));
++  if (!rst->base_fn) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      return;
++  }
+   sprintf(rst->base_fn, "%s/last-record1_%s",
+ 	  home, id);
+   /* 差分ファイル */
+   rst->journal_fn = (char*) malloc(base_len +
+ 				   strlen("/last-record2_"));
++  if (!rst->journal_fn) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      return;
++  }
+   sprintf(rst->journal_fn, "%s/last-record2_%s",
+ 	  home, id);
+ }
+diff --git a/src-worddic/textdict.c b/src-worddic/textdict.c
+index ca5592a..7015664 100644
+--- a/src-worddic/textdict.c
++++ b/src-worddic/textdict.c
+@@ -1,5 +1,7 @@
+ /*
+  * ソートされたテキストから検索を行う
++ *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -16,6 +18,8 @@
+   License along with this library; if not, write to the Free Software
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++#include <assert.h>
++#include <errno.h>
+ #include <unistd.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -177,10 +181,12 @@ anthy_textdict_delete_line(struct textdict *td, int offset)
+   }
+   len = strlen(buf);
+   fclose(fp);
+-  update_mapping(td);
+-  if (!td->mapping) {
++  if (update_mapping(td))
+     return -1;
+-  }
++  /* anthy_mmap() should make td->ptr if td->mapping is not null
++   * in update_mapping().
++   */
++  assert(td->ptr);
+   size = anthy_mmap_size(td->mapping);
+   memmove(&td->ptr[offset], &td->ptr[offset+len], size - offset - len);
+   unmap(td);
+@@ -188,7 +194,11 @@ anthy_textdict_delete_line(struct textdict *td, int offset)
+     unlink(td->fn);
+     return 0;
+   }
+-  truncate(td->fn, size - len);
++  errno = 0;
++  if (truncate(td->fn, size - len)) {
++    anthy_log(0, "Failed truncate in %s:%d: %s\n",
++              __FILE__, __LINE__, strerror(errno));
++  }
+   return 0;
+ }
+ 
+@@ -198,13 +208,16 @@ anthy_textdict_insert_line(struct textdict *td, int offset,
+ {
+   int len = strlen(line);
+   int size;
+-  if (!td) {
++  if (!td)
+     return -1;
+-  }
+-  if (expand_file(td, len)) {
++  if (expand_file(td, len))
+     return -1;
+-  }
+-  update_mapping(td);
++  if (update_mapping(td))
++    return -1;
++  /* anthy_mmap() should make td->ptr if td->mapping is not null
++   * in update_mapping().
++   */
++  assert(td->ptr);
+   size = anthy_mmap_size(td->mapping);
+   memmove(&td->ptr[offset+len], &td->ptr[offset], size - offset - len);
+   memcpy(&td->ptr[offset], line, len);
+diff --git a/src-worddic/texttrie.c b/src-worddic/texttrie.c
+index 9497a02..38576d8 100644
+--- a/src-worddic/texttrie.c
++++ b/src-worddic/texttrie.c
+@@ -31,7 +31,7 @@
+  *  anthy_trie_print_array()
+  *
+  * Copyright (C) 2005-2006 TABATA Yusuke
+- *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -49,17 +49,20 @@
+   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
+ /* open & mmap */
+-#include <unistd.h>
+-#include <sys/types.h>
+-#include <sys/stat.h>
+ #include <fcntl.h>
++#include <sys/stat.h>
++#include <sys/types.h>
++#include <unistd.h>
+ /**/
++#include <assert.h>
++#include <ctype.h>
++#include <errno.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <string.h>
+-#include <ctype.h>
+-#include <anthy/texttrie.h>
+ #include <anthy/filemap.h>
++#include <anthy/texttrie.h>
++#include <anthy/logger.h>
+ #include "dic_main.h"
+ 
+ /* configs */
+@@ -224,9 +227,10 @@ path_setup(struct path *path, const char *key, int len, int *buf)
+   path->len = 0;
+   path->cur = 0;
+   /**/
+-  while (*p) {
++  assert(p);
++  while ((*p) && (path->len < path->max_len)) {
+     path->path[path->len] = p[0] * 256 + p[1];
+-    path->len ++;
++    path->len++;
+     p++;
+     if (p[0]) {
+       p++;
+@@ -288,7 +292,7 @@ encode_super(struct cell *c, char *buf)
+   buf += sput_int(buf, c->u.super.root_cell);
+   buf += sput_int(buf, c->u.super.first_unused);
+   buf += sput_int(buf, c->u.super.serial);
+-  buf += sput_int(buf, LINE_LEN);
++  sput_int(buf, LINE_LEN);
+ }
+ 
+ static void
+@@ -299,7 +303,7 @@ encode_node(struct cell *c, char *buf)
+   buf += sput_int(buf, c->u.node.parent);
+   buf += sput_int(buf, c->u.node.next);
+   buf += sput_int(buf, c->u.node.child);
+-  buf += sput_int(buf, c->u.node.body);
++  sput_int(buf, c->u.node.body);
+ }
+ 
+ static void
+@@ -316,7 +320,7 @@ static void
+ encode_unused(struct cell *c, char *buf)
+ {
+   buf += sprintf(buf, "-next=");
+-  buf += sput_int(buf, c->u.next_unused);
++  sput_int(buf, c->u.next_unused);
+ }
+ 
+ static void
+@@ -378,7 +382,11 @@ write_back_cell(struct text_trie *tt, struct cell *c, int idx)
+   if (anthy_mmap_is_writable(tt->mapping)) {
+     memcpy(&tt->ptr[idx*LINE_LEN], buf, LINE_LEN);
+   } else {
+-    fseek(tt->wfp, idx*LINE_LEN, SEEK_SET);
++    errno = 0;
++    if (fseek(tt->wfp, idx*LINE_LEN, SEEK_SET)) {
++      anthy_log(0, "Failed fseek in %s:%d: %s\n",
++                __FILE__, __LINE__, anthy_strerror(errno));
++    }
+     fwrite(buf, LINE_LEN, 1, tt->wfp);
+     fflush(tt->wfp);
+   }
+@@ -442,7 +450,7 @@ decode_super(struct cell *c, char *buf)
+   buf = sget_int(buf, &c->u.super.size);
+   buf = sget_int(buf, &c->u.super.root_cell);
+   buf = sget_int(buf, &c->u.super.first_unused);
+-  buf = sget_int(buf, &c->u.super.serial);
++  sget_int(buf, &c->u.super.serial);
+   return 0;
+ }
+ 
+@@ -451,7 +459,7 @@ decode_unuse(struct cell *c, char *buf)
+ {
+   c->type = TT_UNUSED;
+   buf = pass_str(buf, "-next=");
+-  buf = sget_int(buf, &c->u.next_unused);
++  sget_int(buf, &c->u.next_unused);
+   return 0;
+ }
+ 
+@@ -464,7 +472,7 @@ decode_node(struct cell *c, char *buf)
+   buf = sget_int(buf, &c->u.node.parent);
+   buf = sget_int(buf, &c->u.node.next);
+   buf = sget_int(buf, &c->u.node.child);
+-  buf = sget_int(buf, &c->u.node.body);
++  sget_int(buf, &c->u.node.body);
+   return 0;
+ }
+ 
+@@ -507,6 +515,11 @@ decode_nth_cell(struct text_trie *tt, struct cell *c, int nth)
+       (nth + 1)) {
+     return NULL;
+   }
++  /* GCC 11.0.1 reports dereference of NULL 'buf'
++   * in case statement with "-Wanalyzer-null-dereference" option.
++   */
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wanalyzer-null-dereference"
+   buf = &tt->ptr[nth*LINE_LEN];
+ 
+   res = -1;
+@@ -533,6 +546,7 @@ decode_nth_cell(struct text_trie *tt, struct cell *c, int nth)
+     /*printf("decode fail (nth=%d::%s).\n", nth, buf);*/
+     ;
+   }
++#pragma GCC diagnostic pop
+   if (res) {
+     c->type = TT_UNUSED;
+   }
+@@ -606,7 +620,11 @@ set_file_size(struct text_trie *tt, int len)
+     return 0;
+   }
+   if (cur_size > size) {
+-    truncate(tt->fn, size);
++    errno = 0;
++    if (truncate(tt->fn, size)) {
++      anthy_log(0, "Failed truncate in %s:%d: %s\n",
++                __FILE__, __LINE__, strerror(errno));
++    }
+   } else {
+     err = expand_file(tt, (size - cur_size) / LINE_LEN);
+     if (!err) {
+@@ -817,7 +835,10 @@ static struct text_trie *
+ alloc_tt(const char *fn, FILE *wfp)
+ {
+   struct text_trie *tt;
+-  tt = malloc(sizeof(struct text_trie));
++  if (!(tt = malloc(sizeof(struct text_trie)))) {
++    anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++    return NULL;
++  }
+   tt->fatal = 0;
+   tt->wfp = wfp;
+   tt->valid_super = 0;
+@@ -1018,7 +1039,11 @@ trie_search_rec(struct text_trie *tt, struct path *p,
+ 		int parent_idx, int create)
+ {
+   int child_idx;
+-  int key = p->path[p->cur];
++  int key;
++  assert(p);
++  assert(p->path);
++  assert((p->cur < p->max_len) && (p->cur >= 0));
++  key = p->path[p->cur];
+   /* special case */
+   if (p->cur == p->len) {
+     return parent_idx;
+@@ -1459,7 +1484,7 @@ disconnect(struct text_trie *tt, int parent_idx, int target_idx)
+     /* not 1st child */
+     int child_idx = parent_cell.u.node.child;
+     while (child_idx) {
+-      struct cell cur;
++      struct cell cur = { 0, };
+       if (!decode_nth_cell(tt, &cur, child_idx)) {
+ 	return ;
+       }
+diff --git a/src-worddic/word_dic.c b/src-worddic/word_dic.c
+index 70d9376..cc2cf89 100644
+--- a/src-worddic/word_dic.c
++++ b/src-worddic/word_dic.c
+@@ -5,7 +5,7 @@
+  *
+  * Copyright (C) 2000-2007 TABATA Yusuke
+  * Copyright (C) 2005-2006 YOSHIDA Yuichi
+- *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -120,8 +120,17 @@ convert_vu(xstr *xs)
+   }
+   if (v > 0) {
+     xstr *nx = malloc(sizeof(xstr));
++    if (!nx) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      return NULL;
++    }
+     nx->len = xs->len + v;
+     nx->str = malloc(sizeof(xchar)*nx->len);
++    if (!nx->str) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      free(nx);
++      return NULL;
++    }
+     j = 0;
+     /* 「ヴ」を「う゛」に変換しつつコピーする */
+     for (i = 0; i < xs->len; i++) {
+@@ -325,10 +334,17 @@ do_gang_load_dic(xstr *sentence, int is_reverse)
+       nr += find_gang_elm(ator, &head, &xs);
+     }
+   }
+-  array = malloc(sizeof(struct gang_elm *) * nr);
++  if (!(array = malloc(sizeof(struct gang_elm *) * nr))) {
++      anthy_log(0, "Failed malloc in %s:%d\n", __FILE__, __LINE__);
++      return;
++  }
+   cur = head.tmp.next;
+   for (i = 0; i < nr; i++) {
+     array[i] = cur;
++    if (!cur) {
++      anthy_log(0, "gang_elm is null at %dth loop\n", i);
++      break;
++    }
+     cur = cur->tmp.next;
+   }
+   qsort(array, nr, sizeof(struct gang_elm *), gang_elm_compare_func);
+diff --git a/src-worddic/word_lookup.c b/src-worddic/word_lookup.c
+index 79725e2..e0d53dc 100644
+--- a/src-worddic/word_lookup.c
++++ b/src-worddic/word_lookup.c
+@@ -14,7 +14,7 @@
+  * Copyright (C) 2000-2007 TABATA Yusuke
+  * Copyright (C) 2005-2006 YOSHIDA Yuichi
+  * Copyright (C) 2001-2002 TAKAI Kosuke
+- *
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  */
+ /*
+   This library is free software; you can redistribute it and/or
+@@ -333,6 +333,7 @@ add_compound_ent(struct seq_ent *seq, struct wt_stat *ws,
+ static void
+ init_wt_stat(struct wt_stat *ws, char *line)
+ {
++  memset(&ws->wt, 0, sizeof(wtype_t));
+   ws->wt_name = NULL;
+   ws->freq = 0;
+   ws->feature = 0;
+@@ -342,7 +343,7 @@ init_wt_stat(struct wt_stat *ws, char *line)
+   ws->encoding = ANTHY_EUC_JP_ENCODING;
+   if (*(ws->line) == 'u') {
+     ws->encoding = ANTHY_UTF8_ENCODING;
+-    ws->line ++;
++    ws->line++;
+   }
+ }
+ 
+@@ -372,7 +373,7 @@ fill_dic_ent(char *line, struct seq_ent *seq,
+       ws.offset += add_dic_ent(seq, &ws, yomi,
+ 			       is_reverse);
+       if (ws.order_bonus > 0) {
+-	ws.order_bonus --;
++	ws.order_bonus--;
+       }
+     }
+     if (ws.line[ws.offset] == ' ') {
+diff --git a/test/check.c b/test/check.c
+index f67dbac..24163ca 100644
+--- a/test/check.c
++++ b/test/check.c
+@@ -1,6 +1,8 @@
+ /* リリース前のチェックを行う */
++#include <assert.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <time.h>
+ #include <anthy/anthy.h>
+ #include <anthy/xstr.h>
+ 
+@@ -48,7 +50,7 @@ test1(void)
+ {
+   anthy_context_t ac;
+   char buf[100];
+-  xstr *xs;
++  xstr *xs, *xs2;
+   ac = anthy_create_context();
+   if (!ac) {
+     printf("failed to create context\n");
+@@ -71,11 +73,29 @@ test1(void)
+   }
+   anthy_release_context(ac);
+   xs = anthy_cstr_to_xstr("あいうえおがぎぐげご", ANTHY_UTF8_ENCODING);
+-  xs = anthy_xstr_hira_to_half_kata(xs);
+-  anthy_putxstrln(xs);
++  xs2 = anthy_xstr_hira_to_half_kata(xs);
++  anthy_putxstrln(xs2);
++  anthy_free_xstr(xs);
++  anthy_free_xstr(xs2);
+   return 0;
+ }
+ 
++/* compliant_rand:
++ * dont_call: "rand" should not be used for security-related applications,
++ * because linear congruential algorithms are too easy to break
++ * but we don't need the strict randoms here.
++ */
++static long int
++compliant_rand(void)
++{
++  struct timespec ts = { 0, };
++  if (!timespec_get (&ts, TIME_UTC)) {
++    printf("Failed timespec_get\n");
++    assert(0);
++  }
++  return ts.tv_nsec;
++}
++
+ static int
+ shake_test(const char *str)
+ {
+@@ -92,8 +112,8 @@ shake_test(const char *str)
+     int nth, rsz;
+     struct anthy_conv_stat cs;
+     anthy_get_stat(ac, &cs);
+-    nth = rand() % cs.nr_segment;
+-    rsz = (rand() % 3) - 1;
++    nth = compliant_rand() % cs.nr_segment;
++    rsz = (compliant_rand() % 3) - 1;
+     anthy_resize_segment(ac, nth, rsz);
+   }
+   anthy_release_context(ac);
+diff --git a/test/main.c b/test/main.c
+index 0c01755..6442257 100644
+--- a/test/main.c
++++ b/test/main.c
+@@ -16,6 +16,7 @@
+  * Copyright (C) 2000-2006 TABATA Yusuke
+  * Copyright (C) 2004-2006 YOSHIDA Yuichi
+  * Copyright (C) 2001-2002 TAKAI Kosuke
++ * Copyright (C) 2021 Takao Fujiwara <takao.fujiwara1@gmail.com>
+  *
+  */
+ 
+@@ -40,7 +41,7 @@
+ 
+ /* テストデータとなる変換前の文字列 */
+ #define TESTDATA "test.txt"
+-const char *testdata = SRCDIR "/" TESTDATA;
++static char *testdata; /* = SRCDIR "/" TESTDATA */
+ 
+ /* 変換後の文字列が妥当かどうかをチェックするためのデータ */
+ #define EXPDATA "test.exp"
+@@ -151,6 +152,7 @@ parse_args(struct condition *cond, int argc, char **argv)
+ {
+   int i;
+   char *arg;
++  testdata = strdup(SRCDIR "/" TESTDATA);
+   for (i = 1; i < argc; i++) {
+     arg = argv[i];
+     if (!strncmp(arg, "--", 2)) {
+@@ -195,6 +197,7 @@ parse_args(struct condition *cond, int argc, char **argv)
+       } else {
+ 	char *buf = alloca(strlen(SRCDIR)+strlen(arg) + 10);
+ 	sprintf(buf, SRCDIR "/%s.txt", arg);
++	free(testdata);
+ 	testdata = strdup(buf);
+       }
+     }
+@@ -306,6 +309,7 @@ save_db(const char *fn, struct res_db *db)
+   for (cr = db->res_list.next; cr; cr = cr->next) {
+     dump_res(fp, cr);
+   }
++  fclose(fp);
+ }
+ 
+ static void
+@@ -316,7 +320,8 @@ ask_results(struct res_db *db)
+     if (cr->check == CHK_UNKNOWN && cr->used == 1) {
+       char buf[256];
+       printf("%s -> %s (y/n/d/q)\n", cr->src_str, cr->res_str);
+-      fgets(buf, 256, stdin);
++      if (!fgets(buf, 256, stdin))
++        printf("Failed fgets in %s:%d\n", __FILE__, __LINE__);
+       if (buf[0] == 'y') {
+ 	cr->check = CHK_OK;
+       } else if (buf[0] == 'n') {
+@@ -376,7 +381,7 @@ main(int argc,char **argv)
+   int line = 1;
+ 
+   cur_input.serial = 0;
+-  cur_input.str = 0;
++  cur_input.str = NULL;
+   init_condition(&cond);
+ 
+   parse_args(&cond, argc, argv);
+@@ -392,6 +397,7 @@ main(int argc,char **argv)
+     printf("failed to open %s.\n", testdata);
+     return 0;
+   }
++  free(testdata);
+   
+   ac = init_lib(cond.use_utf8);
+ 
+@@ -408,6 +414,9 @@ main(int argc,char **argv)
+     }
+     line++;
+   }
++  fclose(fp);
++  free(cur_input.str);
++  cur_input.str = NULL;
+ 
+   anthy_release_context(ac);
+   anthy_quit();
+diff --git a/test/test-matrix.c b/test/test-matrix.c
+index 0bb9917..13edcc2 100644
+--- a/test/test-matrix.c
++++ b/test/test-matrix.c
+@@ -1,4 +1,5 @@
+ /* 疎行列のテスト用コード */
++#include <stdlib.h>
+ #include <stdio.h>
+ #include <anthy/dic.h>
+ #include <anthy/diclib.h>
+@@ -26,6 +27,9 @@ zero_matrix(void)
+   im = mi->image;
+   e = anthy_matrix_image_peek(im, 0, 0);
+   printf("zero matrix: size=%d (0,0)=%d\n", mi->size, e);
++  free(mi->image);
++  free(mi);
++  anthy_sparse_matrix_free(m);
+ }
+ 
+ static void
+@@ -61,6 +65,9 @@ dense_matrix(void)
+     }
+   }
+   printf("%d errors in desnse matrix\n", fail);
++  free(mi->image);
++  free(mi);
++  anthy_sparse_matrix_free(m);
+ }
+ 
+ int
+-- 
+2.28.0
+
+From 255323305b3621286cc4025ac59fa7d37fa1e7ce Mon Sep 17 00:00:00 2001
+From: fujiwarat <takao.fujiwara1@gmail.com>
+Date: Fri, 6 May 2022 20:33:47 +0900
+Subject: [PATCH] src-main/context.c: Code reviews
+
+---
+ src-main/context.c | 20 +++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/src-main/context.c b/src-main/context.c
+index 20dde71..d84858c 100644
+--- a/src-main/context.c
++++ b/src-main/context.c
+@@ -451,7 +451,7 @@ anthy_get_nth_segment(struct segment_list *sl, int n)
+       n < 0) {
+     return NULL;
+   }
+-  for (i = 0, se = sl->list_head.next; i < n; i++, se = se->next);
++  for (i = 0, se = sl->list_head.next; (i < n) && se; i++, se = se->next);
+   return se;
+ }
+ 
+@@ -499,6 +499,17 @@ get_change_state(struct anthy_context *ac)
+   int i;
+   for (i = 0; i < ac->seg_list.nr_segments; i++) {
+     struct seg_ent *s = anthy_get_nth_segment(&ac->seg_list, i);
++    if (!ac->split_info.ce) {
++      anthy_log(0, "ac->split_info.ce is NULL %s:%d\n", __FILE__, __LINE__);
++      resize = 1;
++      break;
++    }
++    if (!s) {
++      anthy_log(0, "ac->seg_list %dth entry is NULL %s:%d\n",
++                i, __FILE__, __LINE__);
++      resize = 1;
++      continue;
++    }
+     if (ac->split_info.ce[s->from].initial_seg_len != s->len) {
+       resize = 1;
+     }
+@@ -538,6 +549,11 @@ write_history(int                   fd,
+     struct seg_ent *s = anthy_get_nth_segment(&ac->seg_list, i);
+     char *c;
+     /**/
++    if (!s) {
++      anthy_log(0, "ac->seg_list %dth entry is NULL %s:%d\n",
++                i, __FILE__, __LINE__);
++      continue;
++    }
+     if (s->committed < 0) {
+       dprintf(fd, "?|");
+       continue ;
+@@ -647,9 +663,11 @@ print_segment(struct seg_ent *e)
+ {
+   int i;
+ 
++  assert(e);
+   anthy_putxstr(&e->str);
+   printf("(");
+   for ( i = 0 ; i < e->nr_cands ; i++) {
++    assert(e->cands);
+     anthy_print_candidate(e->cands[i]);
+     printf(",");
+   }
+-- 
+2.35.1
+
